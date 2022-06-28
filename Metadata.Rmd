@@ -1,0 +1,165 @@
+---
+title: "Metadata"
+author: "Wenxuan Dong"
+date: '2022-06-17'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(ggplot2)
+library(ggmap)
+library(sp)
+library(maptools)
+library(maps)
+library(ggsci)
+library(tidyverse)
+library(ggpubr)
+```
+
+# Map shows the data distribution
+
+To avoid overlap as much as possible, we slightly modified the coordinate of some studies (from Latitude&Longitude to Latitude_new&Longitude_new). But they are still very close to their original location. 
+
+```{r map}
+geodata <- read.table("input/metamap.txt", header = TRUE, sep = "\t")
+mapworld <- borders("world", colour = "white", fill = "grey90")
+ggplot(geodata) + 
+  mapworld + 
+  ylim(-60, 90) + # remove south pole
+  geom_point(aes(
+    x = Longitude_new,
+    y = Latitude_new,
+    color = Study), 
+    alpha = 1, size = 2) +
+  labs(x="Longitude", y="Latitude") +
+  coord_cartesian() +
+  scale_color_simpsons()+
+  labs(x=NULL,y=NULL)+
+  theme_minimal() +
+  theme(legend.position = c(.12,.5),
+        legend.background = element_blank(),
+        legend.key.size = unit(0.5, "cm"),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank())
+#ggsave("output/metamap.pdf", width = 9, height = 5)
+```
+
+# Pie chart shows the data distribution in different catogories
+
+### Country, Hypervariable region, Growth stage, Squencer platform
+```{r pie}
+meta <- read.table("input/sample-metadata.tsv", header = TRUE, sep = "\t")
+
+a <- ggplot(count(meta, country), 
+       aes(x="", y=n, fill=country)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  scale_fill_npg()+
+  theme_void()
+```
+
+```{r}
+b <- ggplot(count(meta, seq_region), 
+       aes(x="", y=n, fill=seq_region)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  scale_fill_npg()+
+  theme_void()
+```
+
+```{r}
+c <- ggplot(count(meta, stage), 
+       aes(x="", y=n, fill=stage)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  scale_fill_npg()+
+  theme_void()
+```
+
+```{r}
+d <- ggplot(count(meta, platform), 
+       aes(x="", y=n, fill=platform)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  scale_fill_npg()+
+  theme_void()
+```
+
+```{r}
+ggarrange(a, b, c, d, ncol = 4, nrow = 1)
+#ggsave("output/metapie.pdf", width = 9, height = 5)
+```
+
+
+
+# Barplot shows the data distribution between timepoints
+
+## All samples
+```{r}
+
+meta$age_day <- factor(meta$age_day)
+meta$paper <- str_replace(meta$paper, '[ab]$', '')
+ggplot(meta) +
+  geom_bar(aes(x=age_day, fill=paper))+
+  scale_fill_simpsons()+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5))
+#ggsave("output/bar_plot.pdf", width = 9, height = 3)
+```
+
+## Only control
+```{r}
+ggplot(filter(meta, treatment == "control")) +
+  geom_bar(aes(x=age_day, fill=paper))+
+  scale_fill_simpsons()+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5))
+#ggsave("output/bar_plot_con.pdf", width = 9, height = 3)
+```
+
+## "Rarefy" the metadata
+Based on the bar plots shown above, we decide to "rarefy" our metadata on days to avoid the bias introduced by the non-uniform samples size.
+
+```{r}
+# days_big <- filter(meta, treatment == "control") %>%
+#   count(age_day) %>% filter(n>50) 
+# 
+# idx_out <- NULL
+# 
+# for (i in days_big$age_day) {
+#   today <- filter(meta, treatment == "control",age_day == i)
+#   row.names(today) <- today$sample.id
+#   rowname  <- row.names(today)
+#   sam.rowname=sample(rowname,50,replace=FALSE)
+#   sam.out <- setdiff(rowname, sam.rowname)
+#   idx_out <- c(idx_out, sam.out)
+# }
+# 
+# meta_con_rare <- filter(meta, 
+#                    treatment == "control",
+#                    !(sample.id %in% idx_out))
+
+#write.table(meta_con_rare, "input/metadata.con.rare.txt", quote = F, sep = "\t")
+
+meta_con_rare <- read.table("input/metadata.con.rare.txt",sep = "\t")
+meta_con_rare$paper <- str_replace(meta_con_rare$paper, '[ab]$', '')
+meta_con_rare$age_day <- factor(meta_con_rare$age_day)
+
+ggplot(meta_con_rare) +
+  geom_bar(aes(x=age_day, fill=paper))+
+  scale_fill_simpsons()+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5))
+#ggsave("output/bar_plot_con_rare.pdf", width = 9, height = 3)
+```
+
+
+
+

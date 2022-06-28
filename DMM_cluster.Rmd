@@ -1,0 +1,456 @@
+---
+title: "DMM_cluster"
+author: "Wenxuan Dong"
+date: '2022-06-20'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r package, include=FALSE}
+library(tidyverse)
+library(qiime2R)
+library(ggsci)
+library(microbiome)
+library(DirichletMultinomial)
+library(reshape2)
+```
+
+# Code for DMM cluster
+The best to run this step is in __HPC__.
+```{r}
+# table <- read_qza("table.qza") # table.qza, rarefied_table.qza, or table-level6.qza
+# otu_table <- as.data.frame(table$data)
+# dat <- otu_table
+# dat <- dat[apply(dat, 1, function(x) !all(x==0)),] #remove rows with all 0
+# count <- as.matrix(t(dat))
+# ## Fit the DMM model.
+# print("model")
+# fit <- lapply(1:20, dmn, count = count, verbose=TRUE)
+# save(fit, "fit_rare.RData")
+# ## Check model fit with different number of mixture components using standard information criteria
+# lplc <- sapply(fit, laplace) # AIC / BIC / Laplace
+# aic  <- sapply(fit, AIC) # AIC / BIC / Laplace
+# bic  <- sapply(fit, BIC) # AIC / BIC / Laplace
+# plot(lplc, type="b", xlab="Number of Dirichlet Components", ylab="Model Fit")
+# ##Pick the optimal model
+# best <- fit[[which.min(unlist(lplc))]]
+# ##Mixture parameters pi and theta
+# mixturewt(best)
+# ##Sample-component assignments
+# ass <- apply(mixture(best), 1, which.max)
+# ass <- as.data.frame(ass)
+# write.table(ass,file = "ass.txt",quote = F,sep = '\t', row.names = T, col.names = T)
+```
+
+# Show results using bubble plots
+```{r, include=FALSE}
+meta <- read.table("input/metadata.con.rare.txt", sep = "\t")
+row.names(meta) <- meta$sample.id
+ass2 <- read.table("input/ass2.txt", header = T, row.names = 1) # rarefaction level
+merge <- merge(meta, ass2, by=0, all.x = F)
+row.names(merge) <- merge$Row.names
+merge$dmm <- merge$ass2
+merge <- merge[,-1]
+merge <- merge[,-16]
+merge$dmm <- factor(merge$dmm, 
+                    levels = c("8","4","1","6","10","7","3","9","2","5"))
+merge$stage <- factor(merge$stage, 
+                      levels = c("suckling","weaning","growing","finishing"))
+merge$age_day <- factor(merge$age_day)
+merge <- mutate(merge, dmmm = ifelse(ass2 == 8, 'A',
+                                     ifelse(ass2 == 4, 'B',
+                                            ifelse(ass2 == 1, 'C',
+                                                   ifelse(ass2 == 6, 'D',
+                                                          ifelse(ass2 == 10, 'E',
+                                                                 ifelse(ass2 == 7, "F",
+                                                                        ifelse(ass2 == 3, 'G',
+                                                                               ifelse(ass2 == 9, 'H',
+                                                                                      ifelse(ass2 == 2, 'I', 
+                                                                                             ifelse(ass2 == 5, 'J', NA)))))))))))
+my_color <- c("#DC0000FF","#F39B7FFF","#E64B35FF", "#B09C85FF","#7E6148FF","#8491B4FF", "#00A087FF","#91D1C2FF","#3C5488FF","#4DBBD5FF")
+```
+
+### Cluster distribution over time
+```{r, warning=FALSE, fig.height = 10,fig.with = 6}
+ggplot(merge, aes(x=age_day, y=dmmm, color=dmmm))+
+  scale_size_continuous(range = c(1,6))+
+  stat_sum() + 
+  scale_color_manual(values = my_color) +
+  coord_flip() +
+  labs(y = "DMM cluster", x = "Days postnatal")+
+  theme_minimal() 
+
+# ggsave("output/dmm_bubble_age.pdf", height = 10, width = 4)
+```
+
+### 3 big papers covering all periods
+```{r, warning=FALSE}
+ggplot(filter(merge, study %in% c("micro19", "pnas21", "msys21"),
+              wean_day == 21), 
+       aes(x=age_day, y=dmmm, color=dmmm))+
+  scale_size_continuous(range = c(1,10))+
+  stat_sum() + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        legend.position = c(.6,.2))+
+  guides(color=FALSE)+
+  labs(y = "DMM cluster", x = "Days postnatal", title = "3 big papers")+
+  scale_color_manual(breaks = c("A","B","C","D","E","F","G","H","I","J"),
+                     values = my_color) +
+  scale_size_continuous(name = "Number of samples")
+# ggsave("output/dmm_bubble_3papers.pdf", height = 5, width = 8)
+```
+
+### Suckling & Weaning
+```{r, warning=FALSE, echo=FALSE} 
+ggplot(filter(merge, stage %in% c("suckling", "weaning")), 
+       aes(x=age_day, y=dmmm, color=dmmm))+
+  scale_size_continuous(range = c(1,10))+
+  stat_sum() + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        legend.position = c(.2,.7))+
+  guides(color=FALSE)+
+  labs(y = "DMM cluster", x = "Days postnatal", title = "Suckling & Weaning")+
+  scale_color_manual(breaks = c("A","B","C","D","E","F","G","H","I","J"),
+                     values = my_color) +
+  scale_size_continuous(name = "Number of samples")
+# ggsave("output/dmm_bubble_suck&wean.pdf", height = 5, width = 8)
+```
+
+### Weaning & Growing 
+```{r, warning=FALSE, echo=FALSE}
+ggplot(filter(merge, stage %in% c("growing", "weaning")), 
+       aes(x=age_day, y=dmmm, color=dmmm))+
+  scale_size_continuous(range = c(1,10))+
+  stat_sum() + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        legend.position = c(.9,.2))+
+  guides(color=FALSE)+
+  labs(y = "DMM cluster", x = "Days postnatal", title = "Weaning & Growing")+
+  scale_color_manual(breaks = c("A","B","C","D","E","F","G","H","I","J"),
+                     values = my_color) +
+  scale_size_continuous(name = "Number of samples")
+# ggsave("output/dmm_bubble_wean&grow.pdf", height = 5, width = 8)
+```
+
+### Growing & Finishing
+```{r, warning=FALSE, echo=FALSE}
+ggplot(filter(merge, stage %in% c("growing", "finishing")), 
+       aes(x=age_day, y=dmmm, color=dmmm))+
+  scale_size_continuous(range = c(1,10))+
+  stat_sum() + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        legend.position = c(.9,.2))+
+  guides(color=FALSE)+
+  labs(y = "DMM cluster", x = "Days postnatal", title = "Growing & Finishing")+
+  scale_color_manual(breaks = c("A","B","C","D","E","F","G","H","I","J"),
+                     values = my_color) +
+  scale_size_continuous(name = "Number of samples")
+# ggsave("output/dmm_bubble_grow&finish.pdf", height = 5, width = 8)
+```
+
+# Top drivers for each cluster
+```{r, include=FALSE}
+# load('input/fit_rare.RData')
+# 
+# fit <- fit_rare
+# 
+# lplc <- base::sapply(fit, DirichletMultinomial::laplace)
+# aic  <- base::sapply(fit, DirichletMultinomial::AIC) # AIC / BIC / Laplace
+# bic  <- base::sapply(fit, DirichletMultinomial::BIC) # AIC / BIC / Laplace
+# 
+# best <- fit[[which.min(unlist(lplc))]]
+# mixturewt(best)
+# taxonomy<-read_qza("input/taxonomy_97.qza")
+# tax.clean<-parse_taxonomy(taxonomy$data)
+# # head(tax.clean)
+# tax.clean$OTU <- row.names(tax.clean)
+# 
+# for (k in seq(ncol(fitted(best)))) {
+#   d <- melt(fitted(best))
+#   colnames(d) <- c("OTU", "cluster", "value")
+#   d <- subset(d, cluster == k) %>%
+#     # Arrange OTUs by assignment strength
+#     arrange(value) %>%
+#     mutate(OTU = factor(OTU, levels = unique(OTU))) %>%
+#     # Only show the most important drivers
+#     filter(abs(value) > quantile(abs(value), 0.8))
+# 
+#   d <- left_join(d, tax.clean)
+# 
+#   # write.table(d, file = paste0('output/dmm/','cluster', k, ".txt"),quote = F, sep = "\t",
+#   #             row.names = F)
+#}
+```
+
+```{r, include=FALSE, cache=TRUE}
+table <- read_qza("input/table-out.qza")
+otu_table <- as.data.frame(table$data) %>% 
+  filter_features(100,2)
+
+options(scipen =200, digits = 4)
+otu_table <- prop.table(data.matrix(otu_table),2)
+otu_table <- as.data.frame(otu_table)
+otu_table <- otu_table[apply(otu_table, 1, function(x) max(x) > 0.001),]
+otu_table$OTUons <- paste0("Feature",1:nrow(otu_table))
+otu_table$OTUstring <- rownames(otu_table)
+otu_key <- select(otu_table, OTUons:OTUstring)
+otu_table <- select(otu_table, -OTUons, -OTUstring)
+
+otu_table_bak <- otu_table
+# otu_table <- otu_table_bak
+
+row.names(merge) <- merge$sample.id
+con <- merge
+con_sample <- row.names(con)
+otu_table <- otu_table[, con_sample]
+
+CLUSTER_COLUMN <- "dmmm"
+md <- merge
+```
+
+### Heatmap shows ra change of top drivers
+```{r, fig.height = 8,fig.with = 10}
+anno <- md[colnames(otu_table), CLUSTER_COLUMN, drop=FALSE]
+anno[[CLUSTER_COLUMN]] <- factor(anno[[CLUSTER_COLUMN]])
+anno <- anno[order(anno[[CLUSTER_COLUMN]]), , drop=FALSE]
+
+# annotation for each taxa
+top_driver <- read.table("input/top50driver.txt", sep = "\t", header = T)
+top50 <- top_driver$OTU
+top_driver <- inner_join(top_driver,otu_key, by=c("OTU"="OTUstring"))%>%
+  tidyr::unite(top50_anno, OTUons, Genus, sep="-")
+top50_anno <- str_replace(top_driver$top50_anno, "Feature", "")
+# color gradients
+colors <- colorRampPalette(rev(RColorBrewer::brewer.pal(n=7, name="RdYlBu")), bias=3)(100)
+# mat
+mat <- otu_table[top50, rownames(anno), drop=FALSE]
+mat <- t(apply(mat, 1L, scales::rescale))
+# Annotation colors
+ann_colors = list(
+  dmmm = c("A"="#DC0000FF","B"="#F39B7FFF","C"="#E64B35FF",
+          "D"="#B09C85FF","E"="#7E6148FF","F"="#8491B4FF",
+          "G"="#00A087FF","H"="#91D1C2FF","I"="#3C5488FF",
+          "J"="#4DBBD5FF"),
+  Phylum = c(Actinobacteria= "#1F77B4FF", Bacteroidetes= "#FF7F0EFF",
+             Euryarchaeota= "#D62728FF", Firmicutes= "#2CA02CFF",
+             Proteobacteria= "#E377C2FF"),
+  DMM = c("A"="#DC0000FF","B"="#F39B7FFF","C"="#E64B35FF",
+          "D"="#B09C85FF","E"="#7E6148FF","F"="#8491B4FF",
+          "G"="#00A087FF","H"="#91D1C2FF","I"="#3C5488FF",
+          "J"="#4DBBD5FF"))
+ann_row <- data.frame(Phylum = top_driver$Phylum,
+                      DMM = factor(rep(c("A", "B", "C", "D", "E",
+                                         "F", "G", "H", "I", "J"), 
+                                       c(5,5,5,5,5,5,5,5,5,5))))
+
+row.names(ann_row) <- row.names(mat)
+
+heatmap <- pheatmap::pheatmap(
+  mat            = mat, 
+  color          = colors,   #uncheck if setting the colour scale manual
+  annotation_col = anno,
+  annotation_row = ann_row,
+  annotation_colors = ann_colors,
+  show_colnames  = FALSE,
+  cluster_rows   = FALSE,
+  cluster_cols   = FALSE,
+  gaps_col       = cumsum(unname(table(anno[[CLUSTER_COLUMN]]))),
+  gaps_row       = c(5,10,15,20,25,30,35,40,45,50),
+  labels_row     = top50_anno)
+  # cellwidth = 0.25, cellheight = 12, fontsize = 7, filename = "output/dmm_heatmap.pdf")
+
+```
+
+### top 50 driver statistical analysis
+
+```{r, include=FALSE}
+# table <- read_qza("input/rarefied_table.qza")
+# otu_table <- as.data.frame(table$data)
+# 
+# otu_table <- prop.table(data.matrix(otu_table),2)
+# otu_table <- as.data.frame(otu_table)
+# 
+# otu_table <- t(otu_table)
+# otu_table <- as.data.frame(otu_table)
+# 
+# data <- cbind(merge, otu_table)
+# 
+# result1 <- NULL
+# 
+# for (i in top50){
+#   print(i)
+#   
+#   test <- dunnTest(get(i) ~ dmm, data=data, method = "holm")
+#   df <- test$res
+#   df <- select(df, Comparison, P.adj)
+#   df$otu <- i
+#   result1 <- rbind(result1, df)
+# }
+# 
+# result2 <- pivot_wider(result1, names_from= 'Comparison', values_from='P.adj', values_fn=mean)
+# 
+# result3 <- left_join(top_driver, result2, by=c("OTU"="otu"))
+# 
+# write.table(result3, "top50_driver_multiple_compare.txt",
+#             quote = F, sep = '\t', row.names = T, col.names = T)
+# 
+# data <- select(data, top50,dmm)
+# 
+# ra <- aggregate(data, by=list(dmm=data$dmm), FUN=median) ## FUN = mean or median
+# ra <- data.frame(t(ra))
+# ra <- ra[-nrow(ra),]
+# colnames(ra) <- c("d8","d4","d1","d6","d10",
+#                   "d7","d3","d9","d2","d5")
+# ra <- ra[-1,]
+# ra$OTU <- row.names(ra)
+# ra_mean <- left_join(top_driver, ra)
+# 
+# write.table(ra_mean, "top50_driver_mean_ral_abun.txt",
+#             quote = F, sep = '\t', row.names = T, col.names = T)
+```
+
+# Alpha diversity analysis
+```{r read alpha, include=FALSE}
+evenness = read_qza("input/core-metrics-results/evenness_vector.qza")
+evenness <- evenness$data %>% rownames_to_column("SampleID")
+observed_features = read_qza("input/core-metrics-results/observed_features_vector.qza")
+observed_features<-observed_features$data %>% rownames_to_column("SampleID")
+observed_features$observed_features <- as.numeric(observed_features$observed_features)
+shannon = read_qza("input/core-metrics-results/shannon_vector.qza")
+shannon<-shannon$data %>% rownames_to_column("SampleID")
+faith_pd = read_qza("input/core-metrics-results/faith_pd_vector.qza")
+faith_pd<-faith_pd$data %>% rownames_to_column("SampleID")
+
+alpha_diversity = merge(x=faith_pd, y=evenness, by.x = "SampleID", by.y = "SampleID")
+alpha_diversity = merge(alpha_diversity, observed_features, by.x = "SampleID", by.y = "SampleID")
+alpha_diversity = merge(alpha_diversity, shannon, by.x = "SampleID", by.y = "SampleID")
+merge$SampleID = row.names(merge)
+merge = merge(merge, alpha_diversity, by.x = "SampleID", by.y = "SampleID")
+row.names(merge) = meta$SampleID
+
+```
+
+### Faith
+```{r}
+kruskal.test(faith_pd ~ dmmm, data=merge)
+
+# multiple comparison
+pair_faith <- pairwise.wilcox.test(merge$faith_pd, merge$dmmm, p.adjust.method="BH")
+# dunnTest(faith_pd ~ dmm, data=merge, method = "holm")
+
+write.table(pair_faith$p.value, 'output/dmm_faith_p.txt', quote = F,
+            sep = '\t', row.names = T)
+
+# boxplot(faith_pd ~ dmmm, data=merge, ylab="Faith phylogenetic diversity")
+
+ggplot(merge, aes(dmmm, faith_pd)) + 
+  geom_boxplot(aes(fill = dmmm), notch = TRUE, color = "gray") + 
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.2,color="gray")+
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.2,color="gray") +
+  theme_minimal() +
+  theme(legend.title = element_blank(),
+        legend.position = "none") + 
+  scale_fill_manual(values = my_color) +
+  labs(y="Faith Phylogenetic Diversity", x = "DMM cluster")
+
+# ggsave("output/dmm_alpha_faith.pdf", height = 5, width = 6)
+```
+
+### Pielou
+```{r, echo=FALSE}
+kruskal.test(pielou_evenness ~ dmmm, data=merge)
+
+# multiple comparison
+pair_even <- pairwise.wilcox.test(merge$pielou_evenness, merge$dmmm, p.adjust.method="BH")
+# dunnTest(Pielou_evenness ~ dmm, data=merge, method = "holm")
+
+write.table(pair_even$p.value, 'output/dmm_even_p.txt', quote = F,
+            sep = '\t', row.names = T)
+
+# boxplot(pielou_evenness ~ dmmm, data=merge, ylab="Pielou evenness")
+
+ggplot(merge, aes(dmmm, pielou_evenness)) + 
+  geom_boxplot(aes(fill = dmmm), notch = TRUE, color = "gray") + 
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.2,color="gray")+
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.2,color="gray") +
+  theme_minimal() +
+  theme(legend.title = element_blank(),
+        legend.position = "none") + 
+  scale_fill_manual(values = my_color) +
+  labs(y="Pielou Enenness", x = "DMM cluster")
+
+# ggsave("output/dmm_alpha_even.pdf", height = 5, width = 6)
+```
+
+### Observed features
+```{r, echo=FALSE}
+kruskal.test(observed_features ~ dmmm, data=merge)
+
+# multiple comparison
+pair_obs <- pairwise.wilcox.test(merge$observed_features, merge$dmmm, p.adjust.method="BH")
+# dunnTest(observed_features ~ dmm, data=merge, method = "holm")
+
+write.table(pair_obs$p.value, 'output/dmm_obs_p.txt', quote = F,
+            sep = '\t', row.names = T)
+
+# boxplot(observed_features ~ dmmm, data=merge, ylab="Pielou evenness")
+
+ggplot(merge, aes(dmmm, observed_features)) + 
+  geom_boxplot(aes(fill = dmmm), notch = TRUE, color = "gray") + 
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.2,color="gray")+
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.2,color="gray") +
+  theme_minimal() +
+  theme(legend.title = element_blank(),
+        legend.position = "none") + 
+  scale_fill_manual(values = my_color) +
+  labs(y="Observed Features", x = "DMM cluster")
+
+# ggsave("output/dmm_alpha_obs.pdf", height = 5, width = 6)
+```
+
+### Shannon
+```{r, echo=FALSE}
+kruskal.test(shannon_entropy ~ dmmm, data=merge)
+
+# multiple comparison
+pair_shannon <- pairwise.wilcox.test(merge$shannon_entropy, merge$dmmm, p.adjust.method="BH")
+# dunnTest(shannon_entropy ~ dmm, data=merge, method = "holm")
+
+write.table(pair_shannon$p.value, 'output/dmm_shannon_p.txt', quote = F,
+            sep = '\t', row.names = T)
+
+# boxplot(shannon_entropy ~ dmmm, data=merge, ylab="Pielou evenness")
+
+ggplot(merge, aes(dmmm, shannon_entropy)) + 
+  geom_boxplot(aes(fill = dmmm), notch = TRUE, color = "gray") + 
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.2,color="gray")+
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.2,color="gray") +
+  theme_minimal() +
+  theme(legend.title = element_blank(),
+        legend.position = "none") + 
+  scale_fill_manual(values = my_color) +
+  labs(y="Shannon Diversity", x = "DMM cluster")
+
+# ggsave("output/dmm_alpha_shannon.pdf", height = 5, width = 6)
+```
+
+
+
+
+
+

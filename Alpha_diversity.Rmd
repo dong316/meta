@@ -1,0 +1,369 @@
+---
+title: "Alpha_diversity"
+author: "Wenxuan Dong"
+date: '2022-06-18'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load package, include=FALSE}
+library(tidyverse)
+library(qiime2R)
+library(ggpubr)
+library(ggsci)
+library(lme4)
+library(afex)
+my_colors <- c("#DC0000FF","#DC0000F7","#DC0000EF","#DC0000E8","#DC0000E0","#DC0000D8",
+              "#DC0000D1","#DC0000C9","#DC0000C1","#DC0000BA","#DC0000B2","#DC0000AA",
+              "#DC0000A3","#DC00009B","#DC000093","#DC00008C","#DC000084","#DC00007C",
+              "#DC000075","#DC00006D","#DC000066","#DC00005E","#DC000056","#DC00004F",
+              "#DC000047","#DC00003F","#DC000038","#DC000030","#DC000028","#DC000021",
+              "#DC000019","#3C548819",
+              "#3C548821","#3C548828","#3C548830","#3C548838","#3C54883F","#3C548847",
+              "#3C54884F","#3C548856","#3C54885E","#3C548866","#3C54886D","#3C548875",
+              "#3C54887C","#3C548884","#3C54888C","#3C548893","#3C54889B","#3C5488A3",
+              "#3C5488AA","#3C5488B2","#3C5488BA","#3C5488C1","#3C5488C9","#3C5488D1",
+              "#3C5488D8","#3C5488E0","#3C5488E8","#3C5488EF","#3C5488F7","#3C5488FF")
+```
+
+```{r read tables, include=FALSE}
+meta <- read.table("input/metadata.con.rare.txt", sep = '\t')
+meta$age_day <- as.numeric(meta$age_day)
+meta$age_day_fac <- factor(meta$age_day, levels = c("0","1","2","3","4","5","6","7","10",
+                                                    "11","12","13","14","15","16","17","18", "20","21","22","23","24","25","27","28","29","30","32","33","35","39","41","42","49", 
+"50","51","55","56","61","63","70","76","77","84","90","91","97","99","104","112","116",
+                              "118","130","132","138","140","146","154","155","159","174","183"))
+evenness = read_qza("input/core-metrics-results/evenness_vector.qza")
+evenness <- evenness$data %>% rownames_to_column("SampleID")
+observed_features = read_qza("input/core-metrics-results/observed_features_vector.qza")
+observed_features<-observed_features$data %>% rownames_to_column("SampleID")
+observed_features$observed_features <- as.numeric(observed_features$observed_features)
+shannon = read_qza("input/core-metrics-results/shannon_vector.qza")
+shannon<-shannon$data %>% rownames_to_column("SampleID")
+faith_pd = read_qza("input/core-metrics-results/faith_pd_vector.qza")
+faith_pd<-faith_pd$data %>% rownames_to_column("SampleID")
+```
+
+```{r merge tables, include=FALSE}
+alpha_diversity = merge(x=faith_pd, y=evenness, by.x = "SampleID", by.y = "SampleID")
+alpha_diversity = merge(alpha_diversity, observed_features, by.x = "SampleID", by.y = "SampleID")
+alpha_diversity = merge(alpha_diversity, shannon, by.x = "SampleID", by.y = "SampleID")
+meta = merge(meta, alpha_diversity, by.x = "sample.id", by.y = "SampleID")
+row.names(meta) = meta$SampleID
+```
+
+# Check normal distribution
+
+```{r hist & qqnorm, fig.show="hide"}
+hist(meta$shannon, main="Shannon diversity", xlab="", breaks=10)
+hist(meta$faith_pd, main="Faith phylogenetic diversity", xlab="", breaks=10)
+hist(meta$pielou_e, main="Evenness", xlab="", breaks=10)
+hist(as.numeric(meta$observed_features), main="Observed Features", xlab="", breaks=10)
+ggqqplot(meta$shannon, title = "Shannon")
+ggqqplot(meta$faith_pd, title = "Faith PD")
+ggqqplot(meta$pielou_e, title = "Evenness")
+ggqqplot(meta$observed_features, title = "Observed Features")
+```
+
+```{r shapiro test}
+shapiro.test(meta$shannon)
+shapiro.test(meta$pielou_e)
+shapiro.test(meta$faith_pd)
+shapiro.test(meta$observed_features)
+```
+
+# Alpha diversity analysis over time points
+
+## GLM model
+We use a General Linear Model for our **non-normally distributed** metrics. We change the distribution from Gaussian (normal) distribution to **Quasipoisson (log) distribution** that fits the data better.
+
+### Faith
+```{r fit models1, fig.show='hold'}
+# Gaussian (normal) distribution
+gaussian.faith.time = glm(faith_pd ~ age_day + paper, data=meta, family="gaussian")
+plot(gaussian.faith.time, which=c(1,2))
+
+# Quasipoisson (log) distribution
+qp.faith.time = glm(faith_pd ~ age_day + paper, data=meta, family="quasipoisson")
+plot(qp.faith.time, which=c(1,2))
+```
+
+post-hoc test
+```{r post hoc1}
+pair_faith <- pairwise.wilcox.test(meta$faith_pd, meta$age_day, p.adjust.method="BH")
+# write.table(pair_faith$p.value, 'output/alpha_faith_pairwise.txt', quote = F,
+#             sep = '\t', row.names = T)
+```
+
+statistical results 
+```{r statistic1, warning=FALSE}
+# print the coefficients (age_day) of GLM model
+coef(summary(qp.faith.time))['age_day', ]
+# linear correlation 
+cor.faith <- cor.test(meta$age_day, meta$faith_pd, method = "spearman")
+cor.faith
+lm.faith <- lm(age_day~faith_pd, meta)
+```
+
+box plots shows the Faith PD change over time
+```{r ggplot1}
+
+ggplot(data = meta, aes(x=age_day_fac, y=faith_pd, # faith_pd,pielou_evenness,shannon_entropy,observed_features
+           fill=age_day_fac), color = "black") +
+  geom_boxplot(notch = FALSE,
+               #outlier.colour = "gray",
+               outlier.shape = 21) +
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.5,color="black") +
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.5,color="black") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  theme(legend.title = element_blank(),
+        legend.position = "none") + 
+  scale_fill_manual(values = my_colors) +
+  labs(y="Faith Phylogenetic Diversity", x = "Days postnatal",
+       title = paste0("Spearman's rho = ", round(cor.faith$estimate, digits = 2), ", ", 
+                                                "P = ", signif(cor.faith$p.value, digits = 3), ", ",
+                                                "R squared = ", round(summary(lm.faith)$r.squared, digits = 3))) 
+# ggsave("output/alpha_age_faith.pdf", height = 4, width = 10)
+```
+
+### Pielou's Evenness
+```{r fit models2, fig.show='hold'}
+# Gaussian (normal) distribution
+gaussian.even.time = glm(pielou_evenness ~ age_day + paper, data=meta, family="gaussian")
+plot(gaussian.even.time, which=c(1,2))
+
+# Quasipoisson (log) distribution
+qp.even.time = glm(pielou_evenness ~ age_day + paper, data=meta, family="quasipoisson")
+plot(qp.even.time, which=c(1,2))
+```
+
+post-hoc test
+```{r post hoc2}
+pair_even <- pairwise.wilcox.test(meta$pielou_evenness, meta$age_day, p.adjust.method="BH")
+write.table(pair_even$p.value, 'output/alpha_even_pairwise.txt', quote = F,
+            sep = '\t', row.names = T)
+```
+
+statistical results 
+```{r statistic2, warning=FALSE}
+# print the coefficients (age_day) of GLM model
+coef(summary(qp.even.time))['age_day', ]
+# linear correlation 
+cor.even <- cor.test(meta$age_day, meta$pielou_evenness, method = "spearman")
+cor.even
+lm.even <- lm(age_day~pielou_evenness, meta)
+```
+
+box plots shows the evenness change over time
+```{r ggplot2}
+
+ggplot(data = meta, aes(x=age_day_fac, y=pielou_evenness, # faith_pd,pielou_evenness,shannon_entropy,observed_features
+           fill=age_day_fac), color = "black") +
+  geom_boxplot(notch = FALSE,
+               #outlier.colour = "gray",
+               outlier.shape = 21) +
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.5,color="black") +
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.5,color="black") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  theme(legend.title = element_blank(),
+        legend.position = "none") + 
+  scale_fill_manual(values = my_colors) +
+  labs(y="Pielou's Evenness", x = "Days postnatal",
+       title = paste0("Spearman's rho = ", round(cor.even$estimate, digits = 2), ", ", 
+                                                "P = ", signif(cor.even$p.value, digits = 3), ", ",
+                                                "R squared = ", round(summary(lm.even)$r.squared, digits = 3))) 
+# ggsave("output/alpha_age_even.pdf", height = 4, width = 10)
+```
+
+### Shannon
+```{r fit models3, fig.show='hold'}
+# Gaussian (normal) distribution
+gaussian.shannon.time = glm(shannon_entropy ~ age_day + paper, data=meta, family="gaussian")
+plot(gaussian.shannon.time, which=c(1,2))
+
+# Quasipoisson (log) distribution
+qp.shannon.time = glm(shannon_entropy ~ age_day + paper, data=meta, family="quasipoisson")
+plot(qp.shannon.time, which=c(1,2))
+```
+
+post-hoc test
+```{r post hoc3}
+pair_shannon <- pairwise.wilcox.test(meta$shannon_entropy, meta$age_day, p.adjust.method="BH")
+write.table(pair_shannon$p.value, 'output/alpha_shannon_pairwise.txt', quote = F,
+            sep = '\t', row.names = T)
+```
+
+statistical results 
+```{r statistic3, warning=FALSE}
+# print the coefficients (age_day) of GLM model
+coef(summary(qp.shannon.time))['age_day', ]
+# linear correlation 
+cor.shannon <- cor.test(meta$age_day, meta$shannon_entropy, method = "spearman")
+cor.shannon
+lm.shannon <- lm(age_day~shannon_entropy, meta)
+```
+
+box plots shows the Shannon change over time
+```{r ggplot3}
+
+ggplot(data = meta, aes(x=age_day_fac, y=shannon_entropy, # faith_pd,pielou_evenness,shannon_entropy,observed_features
+           fill=age_day_fac), color = "black") +
+  geom_boxplot(notch = FALSE,
+               #outlier.colour = "gray",
+               outlier.shape = 21) +
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.5,color="black") +
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.5,color="black") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  theme(legend.title = element_blank(),
+        legend.position = "none") + 
+  scale_fill_manual(values = my_colors) +
+  labs(y="Shannon Diversity", x = "Days postnatal",
+       title = paste0("Spearman's rho = ", round(cor.shannon$estimate, digits = 2), ", ", 
+                                                "P = ", signif(cor.shannon$p.value, digits = 3), ", ",
+                                                "R squared = ", round(summary(lm.shannon)$r.squared, digits = 3))) 
+# ggsave("output/alpha_age_shannon.pdf", height = 4, width = 10)
+```
+
+### Number of observed features
+```{r fit models4,fig.show='hold'}
+# Gaussian (normal) distribution
+gaussian.observed.time = glm(observed_features ~ age_day + paper, data=meta, family="gaussian")
+plot(gaussian.observed.time, which=c(1,2))
+
+# Quasipoisson (log) distribution
+qp.observed.time = glm(observed_features ~ age_day + paper, data=meta, family="quasipoisson")
+plot(qp.observed.time, which=c(1,2))
+```
+
+post-hoc test
+```{r post hoc4, warning=FALSE}
+pair_observed <- pairwise.wilcox.test(meta$observed_features, meta$age_day, p.adjust.method="BH")
+write.table(pair_observed$p.value, 'output/alpha_observed_pairwise.txt', quote = F,
+            sep = '\t', row.names = T)
+```
+
+statistical results 
+```{r statistic4, warning=FALSE}
+# print the coefficients (age_day) of GLM model
+coef(summary(qp.observed.time))['age_day', ]
+# linear correlation 
+cor.observed <- cor.test(meta$age_day, meta$observed_features, method = "spearman")
+cor.observed
+lm.observed <- lm(age_day~observed_features, meta)
+```
+
+box plots shows the observed change over time
+```{r ggplot4}
+
+ggplot(data = meta, aes(x=age_day_fac, y=observed_features, # faith_pd,pielou_evenness,shannon_entropy,observed_features
+           fill=age_day_fac), color = "black") +
+  geom_boxplot(notch = FALSE,
+               #outlier.colour = "gray",
+               outlier.shape = 21) +
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.5,color="black") +
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.5,color="black") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  theme(legend.title = element_blank(),
+        legend.position = "none") + 
+  scale_fill_manual(values = my_colors) +
+  labs(y="Number of Observed Features", x = "Days postnatal",
+       title = paste0("Spearman's rho = ", round(cor.observed$estimate, digits = 2), ", ", 
+                                                "P = ", signif(cor.observed$p.value, digits = 3), ", ",
+                                                "R squared = ", round(summary(lm.observed)$r.squared, digits = 3))) 
+# ggsave("output/alpha_age_observed.pdf", height = 4, width = 10)
+```
+
+# Alpha diversity analysis with treatments
+
+## Antibiotics
+```{r load data, include=FALSE}
+meta <- read.table("input/sample-metadata.tsv", sep = '\t', header = TRUE )
+meta = merge(meta, alpha_diversity, by.x = "sample.id", by.y = "SampleID")
+row.names(meta) = meta$SampleID
+ab_data <- filter(meta, study %in% c('amb21','fi19','fvs20'),
+                  treatment %in% c('antibiotic','control'))
+```
+
+### Linear Mixed-effects Model
+Linear Mixed-effects Model with pig age and treatment as fixed effects, paper and pig id as random effects.
+```{r fit modell, include=FALSE}
+
+mixed.time.ab <- lmer(observed_features ~ age_day+treatment+age_day*treatment + (1|paper) + (1|pig_id), 
+                   data = ab_data)
+
+anova(mixed.time.ab)
+summary(mixed.time.ab)
+coef(summary(mixed.time.ab))
+confint(mixed.time.ab)
+
+a <- data.frame(coef(summary(mixed.time.ab)))
+write.table(a, "output/alpha_ab_observe_mixed.txt", quote = F, sep = "\t",
+            row.names = T)
+```
+
+post hoc test
+```{r post hocc, include=FALSE}
+ab_days <- unique(ab_data$age_day)
+for (i in ab_days){
+  print(i)
+  data <- filter(ab_data, age_day == i)
+  print(wilcox.test(faith_pd~treatment, data=data))
+}
+
+ for (i in ab_days){
+  print(i)
+  data <- filter(ab_data, age_day == i)
+  print(wilcox.test(pielou_evenness~treatment, data=data))
+}
+
+for (i in ab_days){
+  print(i)
+  data <- filter(ab_data, age_day == i)
+  print(wilcox.test(shannon_entropy~treatment, data=data))
+}
+
+for (i in ab_days){
+  print(i)
+  data <- filter(ab_data, age_day == i)
+  print(wilcox.test(observed_features~treatment, data=data))
+}
+```
+
+visualize by boxplot
+```{r, include=FALSE}
+ggboxplot(filter(meta, study %in% c('amb21','fi19','fvs20'),
+                 treatment %in% c('antibiotic','control'),
+                 age_day != 0), 
+          x='age_day', y='faith_pd', 
+          color = 'treatment', add='jitter')+ 
+          #add='jitter', ylim=c(0,400)) +
+  scale_color_manual(breaks = c('control', 'antibiotic'),
+                     values = c('#f44336','#2986cc'))+
+  labs(y='Faith phylogenetic diversity', x='Days postnatal', color=NULL) +
+  theme_minimal() +
+  theme(legend.position = c(.9,.2),
+        axis.text = element_text(size = 12),
+        axis.title.y = element_text(size=12))
+
+```
+
+
+
+
+
+

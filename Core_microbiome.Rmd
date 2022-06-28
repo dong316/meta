@@ -1,0 +1,179 @@
+---
+title: "Core_microbiome"
+author: "Wenxuan Dong"
+date: '2022-06-22'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(tidyverse)
+library(qiime2R)
+library(phyloseq)
+
+meta <- read.table("input/sample-metadata.tsv", sep = "\t", header = T, row.names = 1)
+meta_con <- filter(meta, treatment == "control")
+meta_suck <- filter(meta_con, stage=='suckling')
+meta_wean <- filter(meta_con, stage=='weaning')
+meta_grow <- filter(meta_con, stage=='growing')
+meta_finish <- filter(meta_con, stage=='finishing')
+```
+
+```{r, OTU level}
+# table <- read_qza("input/table-out.qza")
+# otu_table <- as.data.frame(table$data)
+# 
+# otu_suck <- otu_table[, colnames(otu_table) %in% row.names(meta_suck)]
+# otu_wean <- otu_table[, colnames(otu_table) %in% row.names(meta_wean)]
+# otu_grow <- otu_table[, colnames(otu_table) %in% row.names(meta_grow)]
+# otu_finish <- otu_table[, colnames(otu_table) %in% row.names(meta_finish)]
+# otu_con <- otu_table[, colnames(otu_table) %in% row.names(meta_con)]
+# 
+# core_suck <- filter_features(otu_suck, ncol(otu_suck)*0.9, 1) # 4 OTUs
+# core_wean <- filter_features(otu_wean, ncol(otu_wean)*0.9, 1) # 8 OTUs
+# core_grow <- filter_features(otu_grow, ncol(otu_grow)*0.9, 1) # 54 OTUs
+# core_finish <- filter_features(otu_finish, ncol(otu_finish)*0.9, 1) #108 OTUs
+# core_con <- filter_features(otu_con, ncol(otu_con)*0.9, 1) # only 1 OTU 
+```
+
+```{r, genus level}
+table <- read_qza("input/table-level6.qza")
+otu_table <- as.data.frame(table$data)
+
+otu_suck <- otu_table[, colnames(otu_table) %in% row.names(meta_suck)]
+otu_wean <- otu_table[, colnames(otu_table) %in% row.names(meta_wean)]
+otu_grow <- otu_table[, colnames(otu_table) %in% row.names(meta_grow)]
+otu_finish <- otu_table[, colnames(otu_table) %in% row.names(meta_finish)]
+otu_con <- otu_table[, colnames(otu_table) %in% row.names(meta_con)]
+
+core_suck <- filter_features(otu_suck, ncol(otu_suck)*0.9, 1)  # 18
+core_wean <- filter_features(otu_wean, ncol(otu_wean)*0.9, 1) # 59
+core_grow <- filter_features(otu_grow, ncol(otu_grow)*0.9, 1) # 81
+core_finish <- filter_features(otu_finish, ncol(otu_finish)*0.9, 1) # 94
+core_con <- filter_features(otu_con, ncol(otu_con)*0.9, 1) # 27
+
+core_suck$core <- row.names(core_suck) 
+core_suck <- select(core_suck, core)
+core_wean$core <- row.names(core_wean) 
+core_wean <- select(core_wean, core)
+core_grow$core <- row.names(core_grow) 
+core_grow <- select(core_grow, core)
+core_finish$core <- row.names(core_finish) 
+core_finish <- select(core_finish, core)
+core_con$core <- row.names(core_con) 
+core_con <- select(core_con, core)
+
+```
+
+```{r each day, results='hide'}
+days <- unique(meta_con$age_day)
+
+i = 0
+
+for (i in days) {
+  meta_i <- filter(meta_con, age_day == i)
+  otu_i <- otu_table[, colnames(otu_table) %in% row.names(meta_i)]
+  core_i <- filter_features(otu_i, ncol(otu_i)*0.5, 1)
+  core_i$core <- row.names(core_i)
+  core_i <- select(core_i, core)
+  assign(paste0("core",i), core_i)
+  core0 <- inner_join(core0, core_i)
+}  # 8 genera
+
+```
+
+```{r, unclassified}
+
+core_i <- core_con # core_suck, core_wean, core_grow, core_finish, core_con
+
+core_i <- separate(core_i, core, into = c("kingdom", "phylum", "class",
+                                          "order", "family", "genus"),
+                   sep = ";D_\\d__")
+
+for (i in 1:nrow(core_i)){
+  if (core_i[i,2] == "uncultured"){
+    kingdom <- paste("uncultured", core_i[i,1], sep = " ")
+    core_i[i, 2:6] <- kingdom
+  } else if (core_i[i,3] == "uncultured"){
+    phylum <- paste("uncultured", core_i[i,2], sep = " ")
+    core_i[i, 3:6] <- phylum
+  } else if (core_i[i,4] == "uncultured"){
+    class <- paste("uncultured", core_i[i,3], sep = " ")
+    core_i[i, 4:6] <- class
+  } else if (core_i[i,5] == "uncultured"){
+    order <- paste("uncultured", core_i[i,4], sep = " ")
+    core_i[i, 5:6] <- order
+  } else if (core_i[i,6] == "uncultured"){
+    family <- paste("uncultured", core_i[i,5], sep = " ")
+    core_i$genus[i] <- family
+  }
+}
+
+for (i in 1:nrow(core_i)){
+  if (core_i[i,2] == "uncultured bacterium"){
+    kingdom <- paste("uncultured", core_i[i,1], sep = " ")
+    core_i[i, 2:6] <- kingdom
+  } else if (core_i[i,3] == "uncultured bacterium"){
+    phylum <- paste("uncultured", core_i[i,2], sep = " ")
+    core_i[i, 3:6] <- phylum
+  } else if (core_i[i,4] == "uncultured bacterium"){
+    class <- paste("uncultured", core_i[i,3], sep = " ")
+    core_i[i, 4:6] <- class
+  } else if (core_i[i,5] == "uncultured bacterium"){
+    order <- paste("uncultured", core_i[i,4], sep = " ")
+    core_i[i, 5:6] <- order
+  } else if (core_i[i,6] == "uncultured bacteriumd"){
+    family <- paste("uncultured", core_i[i,5], sep = " ")
+    core_i$genus[i] <- family
+  }
+}
+
+for (i in 1:nrow(core_i)){
+  if (core_i[i,2] == "metagenome"){
+    kingdom <- core_i[i,1]
+    core_i[i, 2:6] <- kingdom
+  } else if (core_i[i,3] == "metagenome"){
+    phylum <- core_i[i,2]
+    core_i[i, 3:6] <- phylum
+  } else if (core_i[i,4] == "metagenome"){
+    class <- core_i[i,3]
+    core_i[i, 4:6] <- class
+  } else if (core_i[i,5] == "metagenome"){
+    order <- core_i[i,4]
+    core_i[i, 5:6] <- order
+  } else if (core_i[i,6] == "metagenome"){
+    family <- core_i[i,5]
+    core_i$genus[i] <- family
+  }
+}
+
+core_con <- core_i
+```
+
+```{r}
+write.table(core0, file = "output/core0.txt", quote = F, sep = '\t', row.names = T)
+write.table(core_suck, file = "output/core_suck.txt", quote = F, sep = '\t', row.names = T)
+write.table(core_wean, file = "output/core_wean.txt", quote = F, sep = '\t', row.names = T)
+write.table(core_grow, file = "output/core_grow.txt", quote = F, sep = '\t', row.names = T)
+write.table(core_finish, file = "output/core_finish.txt", quote = F, sep = '\t', row.names = T)
+write.table(core_con, file = "output/core_con.txt", quote = F, sep = '\t', row.names = T)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

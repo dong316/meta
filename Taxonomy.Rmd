@@ -1,0 +1,422 @@
+---
+title: "Taxonomy"
+author: "Wenxuan Dong"
+date: '2022-06-18'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load package, include=FALSE}
+library(qiime2R)
+library(phyloseq)
+library(zoo)
+library(tidyverse)
+library(ggsci)
+library(betareg)
+```
+
+```{r read tables, include=FALSE}
+# metadata
+metadata <- read.table("input/metadata.con.rare.txt", sep = "\t")
+metadata$age_day <- as.numeric(metadata$age_day)
+row.names(metadata) <- metadata[ ,1]
+# taxonomy mapping table
+taxonomy <- read_qza("input/taxonomy_97.qza")
+tax.clean <- parse_taxonomy(taxonomy$data)
+# phyloseq file
+physeq <- qza_to_phyloseq(
+  features="input/rarefied_table.qza",
+  tree="input/tree_97.qza",
+  taxonomy = "input/taxonomy_97.qza",
+  metadata = "input/sample-metadata.tsv"
+)
+
+#First get the OTU table from physeq
+physeq_otu_table <- data.frame(otu_table(physeq), check.names = F)
+
+tax.clean = tax.clean[row.names(tax.clean) %in% rownames(physeq_otu_table),]
+metadata.filtered = metadata[row.names(metadata) %in% colnames(physeq_otu_table),]
+
+#Assign as variables to be feed into phyloseq
+OTU.physeq = otu_table(as.matrix(physeq_otu_table), taxa_are_rows=TRUE)
+
+#our edited and formatted taxonomy table from the top of this script
+tax.physeq = tax_table(as.matrix(tax.clean))    
+meta.physeq = sample_data(metadata.filtered)
+
+#We then merge these into an object of class phyloseq.
+physeq_bar_plot = phyloseq(OTU.physeq, tax.physeq, meta.physeq)
+
+# Set colors for plotting
+my_colors <- c(
+  '#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99','#e31a1c',
+  '#fdbf6f','#ff7f00','#cab2d6','#6a3d9a','#ffff99','#b15928', 
+  "#CBD588", "#5F7FC7", "orange","#DA5724", "#508578", "#CD9BCD",
+  "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+  "#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861", "gray", "black"
+)
+```
+
+# Barplot 
+
+## Phylum level
+```{r Phylum, cache=TRUE}
+my_column <- "age_day"  #this is the metadata column that we will use in the taxa barplot
+
+rm(taxa.summary)
+
+abund_filter <- 0.02  # Our abundance threshold to keep top 10 phyla
+ml ="Phylum"
+
+print(ml)
+  
+  taxa.summary <- physeq_bar_plot %>%
+    tax_glom(taxrank = ml, NArm = FALSE) %>%  # agglomerate at `ml` level
+    transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+    psmelt()  %>%                               # Melt to long format
+    group_by(get(my_column), get(ml)) %>%
+    summarise(Abundance.average=mean(Abundance)) 
+  taxa.summary <- as.data.frame(taxa.summary)
+  colnames(taxa.summary)[1] <- my_column
+  colnames(taxa.summary)[2] <- ml
+  
+  physeq.taxa.max <- taxa.summary %>% 
+    group_by(get(ml)) %>%
+    summarise(overall.max=max(Abundance.average))
+  
+  physeq.taxa.max <- as.data.frame(physeq.taxa.max)
+  colnames(physeq.taxa.max)[1] <- ml
+  
+  # merging the phyla means with the metadata #
+  physeq_meta <- merge(taxa.summary, physeq.taxa.max)
+  
+  
+  physeq_meta_filtered <- filter(physeq_meta, overall.max>abund_filter)
+  #str(physeq_meta_filtered)
+  
+  # Assign Others 
+  physeq_meta_filtered_new <- pivot_wider(physeq_meta_filtered,
+                                          names_from = age_day,
+                                          values_from = Abundance.average) 
+  row.names(physeq_meta_filtered_new) <- physeq_meta_filtered_new$Phylum
+  physeq_meta_filtered_new <- data.frame(physeq_meta_filtered_new)
+  physeq_meta_filtered_new <- physeq_meta_filtered_new[,-1]
+  
+  physeq_meta_filtered_new['Others', ] <- 1-colSums(physeq_meta_filtered_new)
+  physeq_meta_filtered_new$Phylum <- row.names(physeq_meta_filtered_new)
+  
+  physeq_meta_filtered_new <- pivot_longer(physeq_meta_filtered_new,-c('Phylum','overall.max'),
+                                           values_to = 'Abundance.average')
+  
+  physeq_meta_filtered_new$age_day <- str_replace_all(physeq_meta_filtered_new$name,
+                                                      'X', '') 
+  physeq_meta_filtered_new$age_day <- as.numeric(physeq_meta_filtered_new$age_day)
+  
+  physeq_meta_filtered_bak <- physeq_meta_filtered
+  physeq_meta_filtered <- physeq_meta_filtered_new
+
+  # Assign Others END 
+  
+  physeq_meta_filtered$age_day = factor(physeq_meta_filtered$age_day)
+  physeq_meta_filtered <- filter(physeq_meta_filtered)
+  
+  physeq_meta_filtered$Phylum = factor(physeq_meta_filtered$Phylum, 
+                                       levels = c("Actinobacteria","Bacteroidetes",
+                                                  "Epsilonbacteraeota",
+                                                  "Euryarchaeota",
+                                                  "Fusobacteria","Firmicutes","Proteobacteria",
+                                                  "Spirochaetes","Synergistetes",
+                                                  "Tenericutes",
+                                                  "Others"))
+  # Plot 
+  ggplot(physeq_meta_filtered, aes(x = get(my_column), y = Abundance.average, fill = get(ml))) + 
+    geom_bar(stat = "identity") +
+    #scale_fill_manual(values = my_colors) +
+    scale_fill_simpsons()+
+    ylim(c(0,1)) +
+    guides(fill = guide_legend(reverse = F, keywidth = .5, keyheight = .5, ncol = 1)) +
+    theme(legend.text=element_text(size=8)) +
+    theme_minimal()+
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      legend.title = element_blank(),
+      legend.position = 'right',
+      legend.key.height = unit(5, "cm"))+
+    ylab("Relative Abundance") +
+    xlab("Days postnatal") +
+    scale_y_continuous(expand = c(0.01, 0.01)) 
+# ggsave("output/taxa_phy_bar.pdf", height = 4, width = 10)
+```
+
+## Genus level
+```{r Genus, cache=TRUE, warning=FALSE}
+my_column <- "age_day"  #this is the metadata column that we will use in the taxa barplot
+
+rm(taxa.summary)
+
+abund_filter <- 0.05  # Our abundance threshold to keep top 25 genera
+ml ="Genus"
+
+  print(ml)
+  
+  # taxa.summary <- physeq_bar_plot %>%
+  #   tax_glom(taxrank = ml, NArm = FALSE) %>%  # agglomerate at `ml` level
+  #   transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  #   psmelt()  %>%                               # Melt to long format
+  #   group_by(get(my_column), get(ml)) %>%
+  #   summarise(Abundance.average=mean(Abundance)) 
+  # 
+  # save(taxa.summary, file="input/taxa.summary.genus.Rdata")
+  load("input/taxa.summary.genus.Rdata")
+  
+  taxa.summary <- as.data.frame(taxa.summary)
+  colnames(taxa.summary)[1] <- my_column
+  colnames(taxa.summary)[2] <- ml
+  
+  physeq.taxa.max <- taxa.summary %>% 
+    group_by(get(ml)) %>%
+    summarise(overall.max=max(Abundance.average))
+  
+  physeq.taxa.max <- as.data.frame(physeq.taxa.max)
+  colnames(physeq.taxa.max)[1] <- ml
+  
+  # merging the phyla means with the metadata #
+  physeq_meta <- merge(taxa.summary, physeq.taxa.max)
+  
+  
+  physeq_meta_filtered <- filter(physeq_meta, overall.max > abund_filter)
+  
+  unique(physeq_meta_filtered$Genus) # filter 5%  25 top genra
+  
+  #str(physeq_meta_filtered)
+  
+  # Assign Others
+  physeq_meta_filtered_new <- pivot_wider(physeq_meta_filtered,
+                                          names_from = age_day,
+                                          values_from = Abundance.average) 
+  row.names(physeq_meta_filtered_new) <- physeq_meta_filtered_new$Genus
+  physeq_meta_filtered_new <- data.frame(physeq_meta_filtered_new)
+  physeq_meta_filtered_new <- physeq_meta_filtered_new[,-1]
+  
+  physeq_meta_filtered_new['Others', ] <- 1-colSums(physeq_meta_filtered_new)
+  physeq_meta_filtered_new$Genus <- row.names(physeq_meta_filtered_new)
+  
+  physeq_meta_filtered_new <- pivot_longer(physeq_meta_filtered_new,-c('Genus','overall.max'),
+                                           values_to = 'Abundance.average')
+  
+  physeq_meta_filtered_new$age_day <- str_replace_all(physeq_meta_filtered_new$name,
+                                                      'X', '') 
+  physeq_meta_filtered_new$age_day <- as.numeric(physeq_meta_filtered_new$age_day)
+  
+  physeq_meta_filtered_bak <- physeq_meta_filtered
+  physeq_meta_filtered <- physeq_meta_filtered_new
+  
+  # Assign Others END
+  
+  physeq_meta_filtered$age_day = factor(physeq_meta_filtered$age_day)
+  
+  # unique(physeq_meta_filtered$Genus)
+  
+  physeq_meta_filtered$Genus = factor(physeq_meta_filtered$Genus,
+                                      levels = c("Actinomyces", "Bacteroides", 
+                                                 "Blautia","Christensenellaceae R-7 group",
+                                                 "Clostridium sensu stricto 1", "Dialister", 
+                                                 "Enterococcus","Escherichia-Shigella", 
+                                                 "Fusobacterium", "Lachnoclostridium" ,
+                                                 "Lactobacillus", "Methanobrevibacter", 
+                                                 "Phascolarctobacterium",
+                                                 "Prevotella 1", "Prevotella 2", 
+                                                 "Prevotella 7", "Prevotella 9",
+                                                 "Prevotellaceae NK3B31 group", 
+                                                 "Prevotellaceae UCG-003",
+                                                 "Ruminococcaceae UCG-002" , 
+                                                 "Ruminococcaceae UCG-005", "Streptococcus",
+                                                 "Subdoligranulum", "Succinivibrionaceae UCG-001",
+                                                 "Treponema 2", "Others"))
+  
+  # Plot 
+  ggplot(physeq_meta_filtered, aes(x = get(my_column), y = Abundance.average, fill = get(ml))) + 
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = my_colors) +
+    ylim(c(0,1)) +
+    guides(fill = guide_legend(reverse = F, keywidth = .5, keyheight = .5, ncol = 1)) +
+    theme(legend.text=element_text(size=8)) +
+    theme_minimal()+
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+    theme(legend.title = element_blank()) +
+    theme(legend.position = 'right')+
+    ylab("Relative Abundance") +
+    xlab("Days postnatal") +
+    scale_y_continuous(expand = c(0.01, 0.01))
+  
+# ggsave("output/taxa_genus_bar.pdf", height = 4, width = 10)
+```
+
+# Beta regression
+
+## Phylum level
+```{r load data phy, include=FALSE}
+taxonomy <- read_qza("input/table-level2.qza")
+taxa <- data.frame(taxonomy$data)
+taxa <- data.frame(prop.table(data.matrix(taxa),2))
+# colSums(taxa) check if colSums are 1.
+taxa <- taxa[apply(taxa, 1, function(x) mean(x) > 0.0001),] # filter top 20 phyla
+taxa$tax <- row.names(taxa)
+taxa$tax <- str_replace(taxa$tax, "D_0__Bacteria;D_1__","")
+taxa$tax <- str_replace(taxa$tax, "D_0__Archaea;D_1__","")
+row.names(taxa) <- taxa$tax
+taxa <- t(taxa)
+taxa <- data.frame(taxa)
+taxa <- merge(taxa, metadata, by=0, all.x=T)
+row.names(taxa) <- taxa$Row.names
+taxa <- filter(taxa, treatment=="control")
+taxa <- select(taxa, -(pig_id:SRA))
+taxa <- select(taxa, -sample.id)
+taxa <- select(taxa, -Run)
+taxa <- taxa[,-1]
+taxa <- pivot_longer(taxa, -(age_day:paper), names_to = "Phylum", values_to = "ra")
+str(taxa) # check if age_day and ra are numeric
+taxa$ra <- as.numeric(taxa$ra)
+taxa <- filter(taxa, ra != 0)
+unique(taxa$Phylum)
+```
+
+```{r example, include=FALSE}
+dat_Proteobacteria <- subset(taxa, Phylum == "Proteobacteria")
+
+ggplot(dat_Proteobacteria, aes(x = ra, stat(density))) +
+  geom_histogram(aes(fill = age_day, color = age_day), bins = 30, alpha = 0.2) +
+  geom_line(aes(color = age_day), stat = 'density', size = 1.5) +
+  xlim(0, 1)
+
+fit_Proteobacteria <- betareg(ra~paper+age_day, data = dat_Proteobacteria)
+summary(fit_Proteobacteria)
+
+fit_summary <- summary(fit_Proteobacteria)
+
+names(fit_summary)
+
+# extract the important informations
+fit_summary$coefficients$mean[1,1]  #intercept
+fit_summary$coefficients$mean[1,4]  #sig of intercept
+fit_summary$coefficients$mean[2,1]  #regression coefficient
+fit_summary$coefficients$mean[2,4]  #sig of regression coefficient
+fit_summary$coefficients$precision[1,1]  #phi 
+fit_summary$coefficients$precision[1,4]  #sig of phi
+
+```
+
+```{r betareg phy, warning=FALSE}
+result <- NULL
+
+for (phylum in unique(taxa$Phylum)) {
+  print(phylum)
+  dat_phylum <- subset(taxa, Phylum == phylum)
+  phylum_beta <- summary(betareg(ra~paper+age_day, dat_phylum))  #beta regression
+  coefficient <- phylum_beta$coefficients$mean  #intercept & regression coefficient
+  phi <- phylum_beta$coefficients$precision  #phi 
+  
+  result_phylum <- data.frame(rbind(coefficient, phi), check.names = FALSE)  #merge
+  term <- rownames(result_phylum)
+  result_phylum <- cbind(term, result_phylum)
+  result_phylum$phylum <- phylum
+  result <- rbind(result, result_phylum)
+}
+result_bak <- result
+result <- filter(result, term == 'age_day')
+# head(result)
+select <- result
+select[which(select$'Pr(>|z|)' < 0.05),'sig'] <- '1'
+select[which(select$'Pr(>|z|)' >= 0.05),'sig'] <- '0'
+
+select <- select[order(select$Estimate), ]
+select$phylum <- factor(select$phylum, levels = select$phylum)
+
+ggplot(select, aes(phylum, Estimate)) +
+  geom_segment(aes(x = phylum, xend = phylum, y = 0, yend = Estimate)) +
+  geom_point(aes(shape = sig), size = 3) +
+  scale_shape_manual(values = c(1, 16),
+                     breaks = c(0, 1),
+                     labels = c('Adjusted P > 0.05',
+                                'Adjusted P < 0.05')) +
+  labs(x='', y='Regression Coefficient', shape="")+
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = c(.8,.2))
+# ggsave("output/taxa_phy_betareg.pdf", height = 4, width = 12)
+```
+
+## Genus level
+
+```{r load data genus, include=FALSE}
+taxonomy_genus <-read_qza("input/table-level6.qza")
+# head(taxonomy_genus$data)
+genus <- data.frame(taxonomy_genus$data)
+genus <- data.frame(prop.table(data.matrix(genus),2))
+# colSums(genus) check results
+genus <- genus[apply(genus, 1, function(x) mean(x) > 0.003),] # 0.33% filter 66 top genera
+genus$tax <- row.names(genus)
+genus$tax <- str_replace(genus$tax, "D_0__Bacteria;D_1__.*D_5__","")
+genus$tax <- str_replace(genus$tax, "D_0__Archaea;D_1__.*D_5__","")
+genus <- filter(genus,tax != "uncultured") # filter unclassified 
+row.names(genus) <- genus$tax
+genus <- t(genus)
+genus <- data.frame(genus)
+genus <- merge(genus, metadata, by=0, all.x=T)
+row.names(genus) <- genus$Row.names
+genus <- filter(genus, treatment=="control")
+genus <- select(genus, -(pig_id:SRA))
+genus <- select(genus, -sample.id)
+genus <- select(genus, -Run)
+genus <- genus[,-1]
+genus <- pivot_longer(genus, -(age_day:paper), names_to = "Genus", values_to = "ra")
+str(genus)
+genus$ra <- as.numeric(genus$ra)
+genus <- filter(genus, ra != 0)
+unique(genus$Genus)
+
+```
+
+```{r betareg genus, warning=FALSE}
+result <- NULL
+
+for (i in unique(genus$Genus)) {
+  print(i)
+  dat_i <- subset(genus, Genus == i)
+  genus_beta <- summary(betareg(ra~paper+age_day, dat_i))  #beta regression
+  coefficient <- genus_beta$coefficients$mean  #intercept & regression coefficient
+  phi <- genus_beta$coefficients$precision  #phi 
+  
+  result_genus <- data.frame(rbind(coefficient, phi), check.names = FALSE)  #merge
+  term <- rownames(result_genus)
+  result_genus <- cbind(term, result_genus)
+  result_genus$genus <- i
+  result <- rbind(result, result_genus)
+}
+
+result_bak <- result
+result <- filter(result, term == 'age_day')
+# head(result)
+select <- result
+select[which(select$'Pr(>|z|)' < 0.05),'sig'] <- '1'
+select[which(select$'Pr(>|z|)' >= 0.05),'sig'] <- '0'
+
+select <- select[order(select$Estimate), ]
+select$genus <- factor(select$genus, levels = select$genus)
+
+ggplot(select, aes(genus, Estimate)) +
+  geom_segment(aes(x = genus, xend = genus, y = 0, yend = Estimate)) +
+  geom_point(aes(shape = sig), size = 3) +
+  scale_shape_manual(values = c(1, 16),
+                     breaks = c(0, 1),
+                     labels = c('Adjusted P > 0.05',
+                                'Adjusted P < 0.05')) +
+  labs(x='', y='Regression Coefficient', shape="")+
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5),
+        legend.position = c(.8,.2))
+# ggsave( "output/taxa_genus_betareg.pdf", height = 5, width = 12)
+```
+

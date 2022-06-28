@@ -1,0 +1,1415 @@
+---
+title: "Beta_diversity"
+author: "Wenxuan Dong"
+date: '2022-06-19'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE}
+library(qiime2R)
+library(tidyverse)
+library(MetBrewer)
+library(RColorBrewer)
+library(plotly)
+library(ggsci)
+```
+
+```{r load data, include=FALSE, cache=TRUE}
+metadata <- read.table("input/metadata.con.rare.txt", sep = '\t')
+metadata$stage <- factor(metadata$stage, 
+                        levels = c('suckling', 'weaning', 'growing', 'finishing'),
+                        labels = c('Suckling', 'Weaning', 'Growing', 'Finishing'))
+row.names(metadata) <- metadata[ ,1]
+# Assign each distance matrix to index
+index <- c("bray_curtis","jaccard","unweighted_unifrac","weighted_unifrac")
+# Read the principle coordination 
+for (i in index){
+  pcoa_qza<-read_qza(paste0("input/core-metrics-results/", i, "_pcoa_results.qza"))
+  assign((paste0(i, "_pcoa_qza")), pcoa_qza)
+  pcoa_meta <- pcoa_qza$data$Vectors %>%
+    select(SampleID, PC1, PC2, PC3, PC4) %>%
+    inner_join(metadata, by = c("SampleID" = "sample.id"))
+  assign((paste0(i, "_meta")), pcoa_meta)
+}
+
+# Read the distance matrix
+for (i in index){
+  dist_qza <- read_qza(paste0("input/core-metrics-results/", i, "_distance_matrix.qza"))
+  assign((paste0(i, "_dist_qza")), dist_qza)
+}
+
+# ggplot(pcoa_meta, aes(as.factor(age_day), PC1))+
+#   geom_point()+
+#   geom_boxplot()
+
+```
+
+# Figures
+## Bray-Curtis
+
+### Bray over time
+```{r, cache=TRUE}
+idx <- "Bray-Curtis"
+pcoa_qza <- bray_curtis_pcoa_qza
+dist_qza <- bray_curtis_dist_qza
+# age days
+ggplot(bray_curtis_meta, aes(x=PC1, y=PC2, color=age_day)) +
+  geom_point(alpha=.8, size=2) + 
+  theme_minimal(base_size = 12) +
+  #stat_ellipse(level = 0.95, type = "t") +
+  labs(color = "Age\n(Days)", title = paste(idx, "dissimilarity")) +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  scale_color_gradientn(colours = c("darkgreen", "darkolivegreen4", "darkgoldenrod1", "cornsilk")) +
+  theme(legend.position = c(.2,.1),
+        legend.direction = "horizontal",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_bray_age.pdf", height = 5, width = 6)
+# growth stage
+ggplot(bray_curtis_meta, aes(x=PC1, y=PC2, color=stage)) +
+  geom_point(alpha=.8, size=2) + 
+  theme_minimal(base_size = 12) +
+  #stat_ellipse(level = 0.95, type = "t") +
+  labs(color = "Stage", title = paste(idx, "dissimilarity")) +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  scale_colour_nejm() +
+  theme(legend.position = c(.1,.2),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_bray_stage.pdf", height = 5, width = 6)
+
+# Heatmap
+dist <- dist_qza$data %>% as.matrix() %>% 
+  as_tibble(rownames = 'A') %>% 
+  pivot_longer(-A, names_to = 'B', values_to = 'distances') %>% 
+  filter(A %in% row.names(metadata), B %in% row.names(metadata)) %>% 
+  separate(A, sep = 'con', into = c('animal_a', 'day_a'), convert=TRUE) %>% # sample name ends by pig age
+  separate(B, sep = 'con', into = c('animal_b', 'day_b'), convert=TRUE) %>% # sample name ends by pig age
+  mutate(day_a = as.integer(day_a),
+         day_b = as.integer(day_b)) %>% 
+  select(-starts_with('animal'))
+
+dist <- aggregate(distances~day_a+day_b, data = dist, FUN = mean)
+
+dist %>% 
+  mutate(distances=if_else(day_a<day_b, distances, NULL)) %>% 
+  mutate(day_a = fct_reorder(as.character(day_a), day_a),
+         day_b = fct_reorder(as.character(day_b), day_b)) %>%
+  drop_na()%>%
+  mutate(z_score = ((1 - distances) - mean(1-distances)) / sd(1-distances)) %>%
+  ggplot(aes(x=day_a,y=day_b,fill=z_score))+
+  geom_tile() +
+  labs(x="Days postnatal", y="Days postnatal")+
+  scale_x_discrete(breaks = c('0','10','20','30','50','90','130', '174'),
+                   labels = c('0','10','20','30','50','90','130', '174'))+
+  scale_y_discrete(breaks = c('10','20','30','50','90','130', '183'),
+                   labels = c('10','20','30','50','90','130', '183'))+
+  theme_minimal()+
+  scale_fill_gradient2(midpoint = .9,  
+                       low = '#DC0000FF',
+                       mid="white",
+                       high = '#2fa1dd',
+                       name='1 - Bray Curtis dissimilarity\nz-score') +
+  theme(legend.position = c(.5,.1),
+        legend.direction = "horizontal",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_bray_heatmap.pdf", height = 5, width = 6)
+```
+
+### Bray (paper & seq_region) at weaning
+```{r}
+metaall <- read_q2metadata("input/sample-metadata.tsv")
+
+pcoa_meta_all <- pcoa_qza$data$Vectors %>%
+  select(SampleID, PC1, PC2, PC3, PC4) %>%
+  inner_join(metaall, by = c("SampleID" = "SampleID"))
+
+# region at weaning
+ggplot(filter(pcoa_meta_all, age_day==wean_day), aes(x=PC1, y=PC2, color=seq_region)) +
+  geom_point(alpha=1, size = 2) + 
+  stat_ellipse(level = 0.95, type = "t") +
+  theme_minimal() +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  labs(title = idx) +
+  scale_color_d3() +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_bray_region.pdf", height = 5, width = 6)
+
+# paper heterogeneity
+ggplot(filter(pcoa_meta_all, age_day==wean_day), aes(x=PC1, y=PC2, color=paper)) +
+  geom_point(alpha=1, size = 2) + 
+  #stat_ellipse(level = 0.95, type = "t") +
+  theme_minimal() +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) +
+  labs(title = idx) +
+  scale_color_futurama()+
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_bray_paper.pdf", height = 5, width = 6)
+```
+
+## Unweighted UniFrac 
+
+### Unweighted UniFrac over time
+```{r uu aeg, echo=FALSE}
+idx <- "Unweighted UniFrac"
+pcoa_qza <- unweighted_unifrac_pcoa_qza
+dist_qza <- unweighted_unifrac_dist_qza
+# age days
+ggplot(unweighted_unifrac_meta, aes(x=PC1, y=PC2, color=age_day)) +
+  geom_point(alpha=.8, size=2) + 
+  theme_minimal(base_size = 12) +
+  #stat_ellipse(level = 0.95, type = "t") +
+  labs(color = "Age\n(Days)", title = paste(idx, "distance")) +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  scale_color_gradientn(colours = c("darkgreen", "darkolivegreen4", "darkgoldenrod1", "cornsilk")) +
+  theme(legend.position = "none",
+        legend.direction = "horizontal",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_uu_age.pdf", height = 5, width = 6)
+```
+
+```{r uu stage, echo=FALSE}
+# growth stage
+ggplot(unweighted_unifrac_meta, aes(x=PC1, y=PC2, color=stage)) +
+  geom_point(alpha=.8, size=2) + 
+  theme_minimal(base_size = 12) +
+  #stat_ellipse(level = 0.95, type = "t") +
+  labs(color = "Stage", title = paste(idx, "distance")) +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  scale_colour_nejm() +
+  theme(legend.position = "none",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_uu_stage.pdf", height = 5, width = 6)
+```
+
+```{r uu heatmap, echo=FALSE, cache=TRUE}
+# Heatmap
+dist <- dist_qza$data %>% as.matrix() %>% 
+  as_tibble(rownames = 'A') %>% 
+  pivot_longer(-A, names_to = 'B', values_to = 'distances') %>% 
+  filter(A %in% row.names(metadata), B %in% row.names(metadata)) %>% 
+  separate(A, sep = 'con', into = c('animal_a', 'day_a'), convert=TRUE) %>% # sample name ends by pig age
+  separate(B, sep = 'con', into = c('animal_b', 'day_b'), convert=TRUE) %>% # sample name ends by pig age
+  mutate(day_a = as.integer(day_a),
+         day_b = as.integer(day_b)) %>% 
+  select(-starts_with('animal'))
+
+dist <- aggregate(distances~day_a+day_b, data = dist, FUN = mean)
+
+dist %>% 
+  mutate(distances=if_else(day_a<day_b, distances, NULL)) %>% 
+  mutate(day_a = fct_reorder(as.character(day_a), day_a),
+         day_b = fct_reorder(as.character(day_b), day_b)) %>%
+  drop_na()%>%
+  mutate(z_score = ((1 - distances) - mean(1-distances)) / sd(1-distances)) %>%
+  ggplot(aes(x=day_a,y=day_b,fill=z_score))+
+  geom_tile() +
+  labs(x="Days postnatal", y="Days postnatal")+
+  scale_x_discrete(breaks = c('0','10','20','30','50','90','130', '174'),
+                   labels = c('0','10','20','30','50','90','130', '174'))+
+  scale_y_discrete(breaks = c('10','20','30','50','90','130', '183'),
+                   labels = c('10','20','30','50','90','130', '183'))+
+  theme_minimal()+
+  scale_fill_gradient2(midpoint = .7,  
+                       low = '#DC0000FF',
+                       mid="white",
+                       high = '#2fa1dd',
+                       name='1 - Unweighted UniFrac distance\nz-score') +
+  theme(legend.position = c(.5,.1),
+        legend.direction = "horizontal",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_uu_heatmap.pdf", height = 5, width = 6)
+```
+
+### Unweighted UniFrac (paper & seq_region) at weaning
+```{r uu region, echo=FALSE}
+metaall <- read_q2metadata("input/sample-metadata.tsv")
+
+pcoa_meta_all <- pcoa_qza$data$Vectors %>%
+  select(SampleID, PC1, PC2, PC3, PC4) %>%
+  inner_join(metaall, by = c("SampleID" = "SampleID"))
+
+# region at weaning
+ggplot(filter(pcoa_meta_all, age_day==wean_day), aes(x=PC1, y=PC2, color=seq_region)) +
+  geom_point(alpha=1, size = 2) + 
+  stat_ellipse(level = 0.95, type = "t") +
+  theme_minimal() +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  labs(title = idx) +
+  scale_color_d3() +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_uu_region.pdf", height = 5, width = 6)
+```
+
+```{r uu paper, echo=FALSE}
+# paper heterogeneity
+ggplot(filter(pcoa_meta_all, age_day==wean_day), aes(x=PC1, y=PC2, color=paper)) +
+  geom_point(alpha=1, size = 2) + 
+  #stat_ellipse(level = 0.95, type = "t") +
+  theme_minimal() +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) +
+  labs(title = idx) +
+  scale_color_futurama()+
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_uu_paper.pdf", height = 5, width = 6)
+```
+
+## Weighted UniFrac 
+
+### Weighted UniFrac over time
+```{r wu aeg, echo=FALSE}
+idx <- "Weighted UniFrac"
+pcoa_qza <- weighted_unifrac_pcoa_qza
+dist_qza <- weighted_unifrac_dist_qza
+# age days
+ggplot(weighted_unifrac_meta, aes(x=PC1, y=PC2, color=age_day)) +
+  geom_point(alpha=.8, size=2) + 
+  theme_minimal(base_size = 12) +
+  #stat_ellipse(level = 0.95, type = "t") +
+  labs(color = "Age\n(Days)", title = paste(idx, "distance")) +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  scale_color_gradientn(colours = c("darkgreen", "darkolivegreen4", "darkgoldenrod1", "cornsilk")) +
+  theme(legend.position = c(.2,.8),
+        legend.direction = "horizontal",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_wu_age.pdf", height = 5, width = 6)
+```
+
+```{r wu stage, echo=FALSE}
+# growth stage
+ggplot(weighted_unifrac_meta, aes(x=PC1, y=PC2, color=stage)) +
+  geom_point(alpha=.8, size=2) + 
+  theme_minimal(base_size = 12) +
+  #stat_ellipse(level = 0.95, type = "t") +
+  labs(color = "Stage", title = paste(idx, "distance")) +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  scale_colour_nejm() +
+  theme(legend.position = c(.1,.8),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_wu_stage.pdf", height = 5, width = 6)
+```
+
+```{r wu heatmap, echo=FALSE, cache=TRUE}
+# Heatmap
+dist <- dist_qza$data %>% as.matrix() %>% 
+  as_tibble(rownames = 'A') %>% 
+  pivot_longer(-A, names_to = 'B', values_to = 'distances') %>% 
+  filter(A %in% row.names(metadata), B %in% row.names(metadata)) %>% 
+  separate(A, sep = 'con', into = c('animal_a', 'day_a'), convert=TRUE) %>% # sample name ends by pig age
+  separate(B, sep = 'con', into = c('animal_b', 'day_b'), convert=TRUE) %>% # sample name ends by pig age
+  mutate(day_a = as.integer(day_a),
+         day_b = as.integer(day_b)) %>% 
+  select(-starts_with('animal'))
+
+dist <- aggregate(distances~day_a+day_b, data = dist, FUN = mean)
+
+dist %>% 
+  mutate(distances=if_else(day_a<day_b, distances, NULL)) %>% 
+  mutate(day_a = fct_reorder(as.character(day_a), day_a),
+         day_b = fct_reorder(as.character(day_b), day_b)) %>%
+  drop_na()%>%
+  mutate(z_score = ((1 - distances) - mean(1-distances)) / sd(1-distances)) %>%
+  ggplot(aes(x=day_a,y=day_b,fill=z_score))+
+  geom_tile() +
+  labs(x="Days postnatal", y="Days postnatal")+
+  scale_x_discrete(breaks = c('0','10','20','30','50','90','130', '174'),
+                   labels = c('0','10','20','30','50','90','130', '174'))+
+  scale_y_discrete(breaks = c('10','20','30','50','90','130', '183'),
+                   labels = c('10','20','30','50','90','130', '183'))+
+  theme_minimal()+
+  scale_fill_gradient2(midpoint = 0.5,  
+                       low = '#DC0000FF',
+                       mid="white",
+                       high = '#2fa1dd',
+                       name='1 - Weighted UniFrac distance\nz-score') +
+  theme(legend.position = c(.5,.1),
+        legend.direction = "horizontal",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_wu_heatmap.pdf", height = 5, width = 6)
+```
+
+### Weighted UniFrac (paper & seq_region) at weaning
+```{r wu region, echo=FALSE}
+metaall <- read_q2metadata("input/sample-metadata.tsv")
+
+pcoa_meta_all <- pcoa_qza$data$Vectors %>%
+  select(SampleID, PC1, PC2, PC3, PC4) %>%
+  inner_join(metaall, by = c("SampleID" = "SampleID"))
+
+# region at weaning
+ggplot(filter(pcoa_meta_all, age_day==wean_day), aes(x=PC1, y=PC2, color=seq_region)) +
+  geom_point(alpha=1, size = 2) + 
+  stat_ellipse(level = 0.95, type = "t") +
+  theme_minimal() +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  labs(title = idx) +
+  scale_color_d3() +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_wu_region.pdf", height = 5, width = 6)
+```
+
+```{r wu paper, echo=FALSE}
+# paper heterogeneity
+ggplot(filter(pcoa_meta_all, age_day==wean_day), aes(x=PC1, y=PC2, color=paper)) +
+  geom_point(alpha=1, size = 2) + 
+  #stat_ellipse(level = 0.95, type = "t") +
+  theme_minimal() +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) +
+  labs(title = idx) +
+  scale_color_futurama()+
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_wu_paper.pdf", height = 5, width = 6)
+```
+
+## Jaccard 
+
+### Jaccard over time
+```{r jc aeg, echo=FALSE}
+idx <- "Jaccard"
+pcoa_qza <- jaccard_pcoa_qza
+dist_qza <- jaccard_dist_qza
+# age days
+ggplot(jaccard_meta, aes(x=PC1, y=PC2, color=age_day)) +
+  geom_point(alpha=.8, size=2) + 
+  theme_minimal(base_size = 12) +
+  #stat_ellipse(level = 0.95, type = "t") +
+  labs(color = "Age\n(Days)", title = paste(idx, "dissimilarity")) +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  scale_color_gradientn(colours = c("darkgreen", "darkolivegreen4", "darkgoldenrod1", "cornsilk")) +
+  theme(legend.position = c(.2,.8),
+        legend.direction = "horizontal",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_jc_age.pdf", height = 5, width = 6)
+```
+
+```{r jc stage, echo=FALSE}
+# growth stage
+ggplot(jaccard_meta, aes(x=PC1, y=PC2, color=stage)) +
+  geom_point(alpha=.8, size=2) + 
+  theme_minimal(base_size = 12) +
+  #stat_ellipse(level = 0.95, type = "t") +
+  labs(color = "Stage", title = paste(idx, "dissimilarity")) +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  scale_colour_nejm() +
+  theme(legend.position = c(.1,.8),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_jc_stage.pdf", height = 5, width = 6)
+```
+
+```{r jc heatmap, echo=FALSE, cache=TRUE}
+# Heatmap
+dist <- dist_qza$data %>% as.matrix() %>% 
+  as_tibble(rownames = 'A') %>% 
+  pivot_longer(-A, names_to = 'B', values_to = 'distances') %>% 
+  filter(A %in% row.names(metadata), B %in% row.names(metadata)) %>% 
+  separate(A, sep = 'con', into = c('animal_a', 'day_a'), convert=TRUE) %>% # sample name ends by pig age
+  separate(B, sep = 'con', into = c('animal_b', 'day_b'), convert=TRUE) %>% # sample name ends by pig age
+  mutate(day_a = as.integer(day_a),
+         day_b = as.integer(day_b)) %>% 
+  select(-starts_with('animal'))
+
+dist <- aggregate(distances~day_a+day_b, data = dist, FUN = mean)
+
+dist %>% 
+  mutate(distances=if_else(day_a<day_b, distances, NULL)) %>% 
+  mutate(day_a = fct_reorder(as.character(day_a), day_a),
+         day_b = fct_reorder(as.character(day_b), day_b)) %>%
+  drop_na()%>%
+  mutate(z_score = ((1 - distances) - mean(1-distances)) / sd(1-distances)) %>%
+  ggplot(aes(x=day_a,y=day_b,fill=z_score))+
+  geom_tile() +
+  labs(x="Days postnatal", y="Days postnatal")+
+  scale_x_discrete(breaks = c('0','10','20','30','50','90','130', '174'),
+                   labels = c('0','10','20','30','50','90','130', '174'))+
+  scale_y_discrete(breaks = c('10','20','30','50','90','130', '183'),
+                   labels = c('10','20','30','50','90','130', '183'))+
+  theme_minimal()+
+  scale_fill_gradient2(midpoint = 0.5,  
+                       low = '#DC0000FF',
+                       mid="white",
+                       high = '#2fa1dd',
+                       name='1 - Jaccard dissimilarity\nz-score') +
+  theme(legend.position = c(.5,.1),
+        legend.direction = "horizontal",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_jc_heatmap.pdf", height = 5, width = 6)
+```
+
+### Weighted UniFrac (paper & seq_region) at weaning
+```{r jc region, echo=FALSE}
+metaall <- read_q2metadata("input/sample-metadata.tsv")
+
+pcoa_meta_all <- pcoa_qza$data$Vectors %>%
+  select(SampleID, PC1, PC2, PC3, PC4) %>%
+  inner_join(metaall, by = c("SampleID" = "SampleID"))
+
+# region at weaning
+ggplot(filter(pcoa_meta_all, age_day==wean_day), aes(x=PC1, y=PC2, color=seq_region)) +
+  geom_point(alpha=1, size = 2) + 
+  stat_ellipse(level = 0.95, type = "t") +
+  theme_minimal() +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) + 
+  labs(title = idx) +
+  scale_color_d3() +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_jc_region.pdf", height = 5, width = 6)
+```
+
+```{r jc paper, echo=FALSE}
+# paper heterogeneity
+ggplot(filter(pcoa_meta_all, age_day==wean_day), aes(x=PC1, y=PC2, color=paper)) +
+  geom_point(alpha=1, size = 2) + 
+  #stat_ellipse(level = 0.95, type = "t") +
+  theme_minimal() +
+  xlab(paste0("PCo1 (", round(100*pcoa_qza$data$ProportionExplained[1], digits = 2), "%)")) +
+  ylab(paste0("PCo2 (", round(100*pcoa_qza$data$ProportionExplained[2], digits = 2), "%)")) +
+  labs(title = idx) +
+  scale_color_futurama()+
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size = 12))
+# ggsave("output/beta_jc_paper.pdf", height = 5, width = 6)
+```
+
+# Statistics
+```{r, include=FALSE}
+library(stringi)
+library(rstatix)
+library(lattice)
+library("latticeExtra")
+library(phyloseq)
+library(qiime2R)
+library(vegan)
+library(naniar)
+source('Beta_functions.R')
+```
+
+```{r, include=FALSE, cache=TRUE}
+meta <- metadata
+physeq <- qza_to_phyloseq(
+  features="input/core-metrics-results/rarefied_table.qza",
+  tree="input/tree_97.qza",
+  taxonomy = "input/taxonomy_97.qza",
+  metadata = "input/sample-metadata.tsv"
+)
+physeq
+colnames(tax_table(physeq))
+tree <- phy_tree(physeq)
+
+prunetable <- phyloseq_to_df(physeq, addtax = T, addtot = F, addmaxrank = F,
+                             sorting = "abundance")
+
+NewTax <- prunetable[,c(1:8)]
+row.names(NewTax) <- NewTax[,1]
+NewTax = NewTax[,-c(1)]
+#write.table(NewTax,"NewTax.txt",sep=",", row.names = TRUE)
+NewASVTable <- prunetable
+NewASVTable <- NewASVTable[,-c(2:8)]
+row.names(NewASVTable) <- NewASVTable[,1]
+NewASVTable = NewASVTable[,-c(1)]
+NewASVTable = t(NewASVTable)
+
+OTU <- data.frame(NewASVTable[rownames(NewASVTable) %in% rownames(meta),])
+OTU$sample.id <- rownames(OTU)
+meta <- left_join(OTU, meta)
+row.names(meta) <- meta$sample.id
+meta <- meta[, -(1:ncol(OTU))]
+OTU <- OTU[, -ncol(OTU)]
+
+# Creating the Phyloseq Object
+OTU.physeq = otu_table(as.matrix(OTU), taxa_are_rows=FALSE)
+tax.physeq = tax_table(as.matrix(NewTax))
+meta.physeq = sample_data(meta)
+
+physeq_con = phyloseq(OTU.physeq, tree, tax.physeq, meta.physeq)
+physeq_con
+colnames(tax_table(physeq_con))
+
+```
+
+## All control samples
+
+### All stages
+```{r, echo=FALSE, cache=TRUE}
+dist.bray.con <- phyloseq::distance(physeq_con, method = "bray")
+dist.bray.con <- as.dist(dist.bray.con)
+
+## BC age
+BC <- adonis(dist.bray.con ~ meta$age_day, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$age_day)
+#boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+
+## BC stage
+BC <- adonis(dist.bray.con ~ meta$stage, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$stage)
+# boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+
+## BC study
+BC <- adonis(dist.bray.con ~ meta$study, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$study)
+boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+
+## BC seq_region
+BC <- adonis(dist.bray.con ~ meta$seq_region, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$seq_region)
+boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+
+## BC platform
+BC <- adonis(dist.bray.con ~ meta$platform, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$platform)
+boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+
+## BC country
+BC <- adonis(dist.bray.con ~ meta$country, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$country)
+boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+```
+
+```{r, echo=FALSE, cache=TRUE}
+dist.jacc.con <- phyloseq::distance(physeq_con, method = "jaccard")
+dist.jacc.con <- as.dist(dist.jacc.con)
+
+## JC age
+JC <- adonis(dist.jacc.con ~ meta$age_day, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$age_day)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+## JC stage
+JC <- adonis(dist.jacc.con ~ meta$stage, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$stage)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+## JC study
+JC <- adonis(dist.jacc.con ~ meta$study, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$study)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+## JC seq_region
+JC <- adonis(dist.jacc.con ~ meta$seq_region, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$seq_region)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+## JC platform
+JC <- adonis(dist.jacc.con ~ meta$platform, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$platform)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+## JC country
+JC <- adonis(dist.jacc.con ~ meta$country, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$country)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+```
+
+```{r, echo=FALSE, cache=TRUE}
+### UniFrac
+
+# dist.unif.con <- phyloseq::distance(physeq_con, method = "unifrac")
+# dist.unif.con <- as.dist(dist.unif.con)
+# phyloseq approach is time consuming, we import the dist matrix from qiime instead
+
+uu_qza <- unweighted_unifrac_dist_qza
+uu_dist <- uu_qza$data %>% as.matrix() %>% 
+  as.data.frame(rownames = 'SampleID')  # all samples (3302) from rarefied table
+
+meta <- metadata
+# merge metadata&distance matrix 
+meta_dist <- merge(meta, uu_dist, by=0, all.x = F)
+# extract the distance matrix
+dist.unif.con <- select(meta_dist, all_of(meta_dist[['Row.names']]))
+row.names(dist.unif.con) <- colnames(dist.unif.con)
+dist.unif.con <- as.dist(dist.unif.con)
+# rename the meta to fit the equation bellow
+meta <- meta_dist
+
+## UF age
+UF <- adonis(dist.unif.con ~ meta$age_day, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$age_day)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+
+## UF stage
+UF <- adonis(dist.unif.con ~ meta$stage, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$stage)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+
+## UF study
+UF <- adonis(dist.unif.con ~ meta$study, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$study)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+
+## UF seq_region
+UF <- adonis(dist.unif.con ~ meta$seq_region, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$seq_region)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+
+## UF platform
+UF <- adonis(dist.unif.con ~ meta$platform, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$platform)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+
+## UF country
+UF <- adonis(dist.unif.con ~ meta$country, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$country)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+```
+
+```{r, echo=FALSE, cache=TRUE}
+### weighted-unifrac
+wu_qza <- weighted_unifrac_dist_qza
+wu_dist <- wu_qza$data %>% as.matrix() %>% 
+  as.data.frame(rownames = 'SampleID')  # all samples (3302) from rarefied table
+meta <- metadata
+
+# merge metadata&distance matrix 
+meta_dist <- merge(meta, wu_dist, by=0, all.x = F)
+# extract the distance matrix
+dist.wunif.con <- select(meta_dist, all_of(meta_dist[['Row.names']]))
+row.names(dist.wunif.con) <- colnames(dist.wunif.con)
+dist.wunif.con <- as.dist(dist.wunif.con)
+# rename the meta to fit the equation bellow
+meta <- meta_dist
+
+
+## WU age
+WU <- adonis(dist.wunif.con ~ meta$age_day, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$age_day)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+## WU stage
+WU <- adonis(dist.wunif.con ~ meta$stage, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$stage)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+## WU study
+WU <- adonis(dist.wunif.con ~ meta$study, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$study)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+## WU seq_region
+WU <- adonis(dist.wunif.con ~ meta$seq_region, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$seq_region)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+## WU platform
+WU <- adonis(dist.wunif.con ~ meta$platform, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$platform)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+## WU country
+WU <- adonis(dist.wunif.con ~ meta$country, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$country)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+```
+
+### Different stages
+
+```{r, include=FALSE, cache=TRUE}
+meta <- metadata
+meta <- filter(meta, stage == "Finishing")
+OTU <- data.frame(NewASVTable[rownames(NewASVTable) %in% rownames(meta),])
+OTU$sample.id <- rownames(OTU)
+meta <- left_join(OTU, meta)
+row.names(meta) <- meta$sample.id
+meta <- meta[, -(1:ncol(OTU))]
+OTU <- OTU[, -ncol(OTU)]
+
+# Creating the Phyloseq Object
+OTU.physeq = otu_table(as.matrix(OTU), taxa_are_rows=FALSE)
+tax.physeq = tax_table(as.matrix(NewTax))
+meta.physeq = sample_data(meta)
+
+physeq_con = phyloseq(OTU.physeq, tree, tax.physeq, meta.physeq)
+physeq_con
+colnames(tax_table(physeq_con))
+```
+
+```{r, include=FALSE, cache=TRUE}
+### Bray Curtis
+dist.bray.con <- phyloseq::distance(physeq_con, method = "bray")
+dist.bray.con <- as.dist(dist.bray.con)
+
+## BC age
+BC <- adonis(dist.bray.con ~ meta$age_day, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$age_day)
+#boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+
+## BC study
+BC <- adonis(dist.bray.con ~ meta$study, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$study)
+boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+
+# ## BC seq_region
+# BC <- adonis(dist.bray.con ~ meta$seq_region, permutations = 999)
+# BC$aov.tab
+# BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$seq_region)
+# boxplot(BCdisp)
+# anova(BCdisp)
+# pBCdisp <- permutest(BCdisp, permutations = 999)
+# pBCdisp
+# 
+# ## BC platform
+# BC <- adonis(dist.bray.con ~ meta$platform, permutations = 999)
+# BC$aov.tab
+# BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$platform)
+# boxplot(BCdisp)
+# anova(BCdisp)
+# pBCdisp <- permutest(BCdisp, permutations = 999)
+# pBCdisp
+
+## BC country
+BC <- adonis(dist.bray.con ~ meta$country, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$country)
+boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+```
+
+```{r, include=FALSE, cache=TRUE}
+### Jaccard
+dist.jacc.con <- phyloseq::distance(physeq_con, method = "jaccard")
+dist.jacc.con <- as.dist(dist.jacc.con)
+
+## JC age
+JC <- adonis(dist.jacc.con ~ meta$age_day, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$age_day)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+## JC study
+JC <- adonis(dist.jacc.con ~ meta$study, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$study)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+# ## JC seq_region
+# JC <- adonis(dist.jacc.con ~ meta$seq_region, permutations = 999)
+# JC$aov.tab
+# JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$seq_region)
+# boxplot(JCdisp)
+# anova(JCdisp)
+# pJCdisp <- permutest(JCdisp, permutations = 999)
+# pJCdisp
+# 
+# ## JC platform
+# JC <- adonis(dist.jacc.con ~ meta$platform, permutations = 999)
+# JC$aov.tab
+# JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$platform)
+# boxplot(JCdisp)
+# anova(JCdisp)
+# pJCdisp <- permutest(JCdisp, permutations = 999)
+# pJCdisp
+
+## JC country
+JC <- adonis(dist.jacc.con ~ meta$country, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$country)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+```
+
+```{r, include=FALSE, cache=TRUE}
+### UniFrac
+
+# dist.unif.con <- phyloseq::distance(physeq_con, method = "unifrac")
+# dist.unif.con <- as.dist(dist.unif.con)
+# phyloseq approach is time consuming, we import the dist matrix from qiime instead
+
+uu_qza <- unweighted_unifrac_dist_qza
+uu_dist <- uu_qza$data %>% as.matrix() %>% 
+  as.data.frame(rownames = 'SampleID')  # all samples (3302) from rarefied table
+
+meta <- metadata
+meta <- filter(meta, stage == "Finishing")
+# merge metadata&distance matrix 
+meta_dist <- merge(meta, uu_dist, by=0, all.x = F)
+# extract the distance matrix
+dist.unif.con <- select(meta_dist, all_of(meta_dist[['Row.names']]))
+row.names(dist.unif.con) <- colnames(dist.unif.con)
+dist.unif.con <- as.dist(dist.unif.con)
+# rename the meta to fit the equation bellow
+meta <- meta_dist
+
+## UF age
+UF <- adonis(dist.unif.con ~ meta$age_day, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$age_day)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+
+## UF study
+UF <- adonis(dist.unif.con ~ meta$study, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$study)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+
+# ## UF seq_region
+# UF <- adonis(dist.unif.con ~ meta$seq_region, permutations = 999)
+# UF$aov.tab
+# UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$seq_region)
+# boxplot(UFdisp)
+# anova(UFdisp)
+# pUFdisp <- permutest(UFdisp, permutations = 999)
+# pUFdisp
+# 
+# ## UF platform
+# UF <- adonis(dist.unif.con ~ meta$platform, permutations = 999)
+# UF$aov.tab
+# UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$platform)
+# boxplot(UFdisp)
+# anova(UFdisp)
+# pUFdisp <- permutest(UFdisp, permutations = 999)
+# pUFdisp
+
+## UF country
+UF <- adonis(dist.unif.con ~ meta$country, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$country)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+```
+
+```{r, include=FALSE, cache=TRUE}
+### weighted-unifrac
+wu_qza <- weighted_unifrac_dist_qza
+wu_dist <- wu_qza$data %>% as.matrix() %>% 
+  as.data.frame(rownames = 'SampleID')  # all samples (3302) from rarefied table
+
+meta <- metadata
+meta <- filter(meta, stage == "Finishing")
+
+# merge metadata&distance matrix 
+meta_dist <- merge(meta, wu_dist, by=0, all.x = F)
+# extract the distance matrix
+dist.wunif.con <- select(meta_dist, all_of(meta_dist[['Row.names']]))
+row.names(dist.wunif.con) <- colnames(dist.wunif.con)
+dist.wunif.con <- as.dist(dist.wunif.con)
+# rename the meta to fit the equation bellow
+meta <- meta_dist
+
+
+## WU age
+WU <- adonis(dist.wunif.con ~ meta$age_day, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$age_day)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+## WU study
+WU <- adonis(dist.wunif.con ~ meta$study, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$study)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+# ## WU seq_region
+# WU <- adonis(dist.wunif.con ~ meta$seq_region, permutations = 999)
+# WU$aov.tab
+# WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$seq_region)
+# boxplot(WUdisp)
+# anova(WUdisp)
+# pWUdisp <- permutest(WUdisp, permutations = 999)
+# pWUdisp
+# 
+# ## WU platform
+# WU <- adonis(dist.wunif.con ~ meta$platform, permutations = 999)
+# WU$aov.tab
+# WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$platform)
+# boxplot(WUdisp)
+# anova(WUdisp)
+# pWUdisp <- permutest(WUdisp, permutations = 999)
+# pWUdisp
+
+## WU country
+WU <- adonis(dist.wunif.con ~ meta$country, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$country)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+```
+
+### At weaning day
+```{r, include=FALSE}
+meta <- read_q2metadata("input/sample-metadata.tsv")
+row.names(meta) <- meta[ ,1]
+meta <- filter(meta, treatment=="control", age_day == wean_day)
+
+OTU <- data.frame(NewASVTable[rownames(NewASVTable) %in% rownames(meta),])
+OTU$SampleID <- rownames(OTU)
+meta <- left_join(OTU, meta)
+row.names(meta) <- meta$SampleID
+meta <- meta[, -(1:ncol(OTU))]
+OTU <- OTU[, -ncol(OTU)]
+
+# Creating the Phyloseq Object
+OTU.physeq = otu_table(as.matrix(OTU), taxa_are_rows=FALSE)
+tax.physeq = tax_table(as.matrix(NewTax))
+meta.physeq = sample_data(meta)
+
+physeq_con = phyloseq(OTU.physeq, tree, tax.physeq, meta.physeq)
+physeq_con
+colnames(tax_table(physeq_con))
+
+```
+
+```{r, echo=FALSE, cache=TRUE}
+dist.bray.con <- phyloseq::distance(physeq_con, method = "bray")
+dist.bray.con <- as.dist(dist.bray.con)
+
+## BC age
+BC <- adonis(dist.bray.con ~ meta$age_day, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$age_day)
+#boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+
+# ## BC stage
+# BC <- adonis(dist.bray.con ~ meta$stage, permutations = 999)
+# BC$aov.tab
+# BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$stage)
+# # boxplot(BCdisp)
+# anova(BCdisp)
+# pBCdisp <- permutest(BCdisp, permutations = 999)
+# pBCdisp
+
+## BC study
+BC <- adonis(dist.bray.con ~ meta$study, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$study)
+# boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+
+## BC seq_region
+BC <- adonis(dist.bray.con ~ meta$seq_region, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$seq_region)
+# boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+
+## BC platform
+BC <- adonis(dist.bray.con ~ meta$platform, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$platform)
+# boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+
+## BC country
+BC <- adonis(dist.bray.con ~ meta$country, permutations = 999)
+BC$aov.tab
+BCdisp <- betadisper(dist.bray.con,  type = c("centroid"), group = meta$country)
+# boxplot(BCdisp)
+anova(BCdisp)
+pBCdisp <- permutest(BCdisp, permutations = 999)
+pBCdisp
+```
+
+```{r, echo=FALSE, cache=TRUE}
+dist.jacc.con <- phyloseq::distance(physeq_con, method = "jaccard")
+dist.jacc.con <- as.dist(dist.jacc.con)
+
+## JC age
+JC <- adonis(dist.jacc.con ~ meta$age_day, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$age_day)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+# ## JC stage
+# JC <- adonis(dist.jacc.con ~ meta$stage, permutations = 999)
+# JC$aov.tab
+# JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$stage)
+# boxplot(JCdisp)
+# anova(JCdisp)
+# pJCdisp <- permutest(JCdisp, permutations = 999)
+# pJCdisp
+
+## JC study
+JC <- adonis(dist.jacc.con ~ meta$study, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$study)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+## JC seq_region
+JC <- adonis(dist.jacc.con ~ meta$seq_region, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$seq_region)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+## JC platform
+JC <- adonis(dist.jacc.con ~ meta$platform, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$platform)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+## JC country
+JC <- adonis(dist.jacc.con ~ meta$country, permutations = 999)
+JC$aov.tab
+JCdisp <- betadisper(dist.jacc.con,  type = c("centroid"), group = meta$country)
+boxplot(JCdisp)
+anova(JCdisp)
+pJCdisp <- permutest(JCdisp, permutations = 999)
+pJCdisp
+
+```
+
+```{r, echo=FALSE, cache=TRUE}
+### UniFrac
+
+# dist.unif.con <- phyloseq::distance(physeq_con, method = "unifrac")
+# dist.unif.con <- as.dist(dist.unif.con)
+# phyloseq approach is time consuming, we import the dist matrix from qiime instead
+
+uu_qza <- unweighted_unifrac_dist_qza
+uu_dist <- uu_qza$data %>% as.matrix() %>% 
+  as.data.frame(rownames = 'SampleID')  # all samples (3302) from rarefied table
+
+meta <- meta
+# merge metadata&distance matrix 
+meta_dist <- merge(meta, uu_dist, by=0, all.x = F)
+# extract the distance matrix
+dist.unif.con <- select(meta_dist, all_of(meta_dist[['Row.names']]))
+row.names(dist.unif.con) <- colnames(dist.unif.con)
+dist.unif.con <- as.dist(dist.unif.con)
+# rename the meta to fit the equation bellow
+meta <- meta_dist
+
+## UF age
+UF <- adonis(dist.unif.con ~ meta$age_day, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$age_day)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+
+# ## UF stage
+# UF <- adonis(dist.unif.con ~ meta$stage, permutations = 999)
+# UF$aov.tab
+# UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$stage)
+# boxplot(UFdisp)
+# anova(UFdisp)
+# pUFdisp <- permutest(UFdisp, permutations = 999)
+# pUFdisp
+
+## UF study
+UF <- adonis(dist.unif.con ~ meta$study, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$study)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+
+## UF seq_region
+UF <- adonis(dist.unif.con ~ meta$seq_region, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$seq_region)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+
+## UF platform
+UF <- adonis(dist.unif.con ~ meta$platform, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$platform)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+
+## UF country
+UF <- adonis(dist.unif.con ~ meta$country, permutations = 999)
+UF$aov.tab
+UFdisp <- betadisper(dist.unif.con,  type = c("centroid"), group = meta$country)
+boxplot(UFdisp)
+anova(UFdisp)
+pUFdisp <- permutest(UFdisp, permutations = 999)
+pUFdisp
+```
+
+```{r, echo=FALSE, cache=TRUE}
+### weighted-unifrac
+wu_qza <- weighted_unifrac_dist_qza
+wu_dist <- wu_qza$data %>% as.matrix() %>% 
+  as.data.frame(rownames = 'SampleID')  # all samples (3302) from rarefied table
+meta <- read_q2metadata("input/sample-metadata.tsv")
+row.names(meta) <- meta[ ,1]
+meta <- filter(meta, treatment=="control", age_day == wean_day)
+
+# merge metadata&distance matrix 
+meta_dist <- merge(meta, wu_dist, by=0, all.x = F)
+# extract the distance matrix
+dist.wunif.con <- select(meta_dist, all_of(meta_dist[['Row.names']]))
+row.names(dist.wunif.con) <- colnames(dist.wunif.con)
+dist.wunif.con <- as.dist(dist.wunif.con)
+# rename the meta to fit the equation bellow
+meta <- meta_dist
+
+
+## WU age
+WU <- adonis(dist.wunif.con ~ meta$age_day, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$age_day)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+# ## WU stage
+# WU <- adonis(dist.wunif.con ~ meta$stage, permutations = 999)
+# WU$aov.tab
+# WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$stage)
+# boxplot(WUdisp)
+# anova(WUdisp)
+# pWUdisp <- permutest(WUdisp, permutations = 999)
+# pWUdisp
+
+## WU study
+WU <- adonis(dist.wunif.con ~ meta$study, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$study)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+## WU seq_region
+WU <- adonis(dist.wunif.con ~ meta$seq_region, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$seq_region)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+## WU platform
+WU <- adonis(dist.wunif.con ~ meta$platform, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$platform)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+## WU country
+WU <- adonis(dist.wunif.con ~ meta$country, permutations = 999)
+WU$aov.tab
+WUdisp <- betadisper(dist.wunif.con,  type = c("centroid"), group = meta$country)
+boxplot(WUdisp)
+anova(WUdisp)
+pWUdisp <- permutest(WUdisp, permutations = 999)
+pWUdisp
+
+```
+

@@ -1,0 +1,726 @@
+---
+title: "RF_regression"
+author: "Wenxuan Dong"
+date: '2022-06-21'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE}
+library(tidyverse)
+library(qiime2R)
+library(phyloseq)
+library(zoo)
+library(randomForest)
+library(xgboost)
+library(skimr)
+library(DataExplorer)
+library(caret)
+library(pROC)
+library(pheatmap)
+library(ggsci)
+```
+
+```{r meta & otu, include=FALSE, cache=TRUE}
+meta <- read.table("input/metadata.con.rare.txt", sep = "\t")
+## Control groups
+meta_con <- filter(meta, treatment == "control")
+## 2 studies that have no contribution to the model
+meta_con_out <- filter(meta, treatment == "control", 
+                       study %in% c("anim21","pnas21"))
+## the rest controls for model
+meta_con_in <- setdiff(meta_con, meta_con_out)
+
+table <- read_qza("input/table-out.qza")
+otu_table <- as.data.frame(table$data) %>% 
+  filter_features(100,2)
+# otu_table <- otu_table[,colSums(otu_table) >= 5000]
+options(scipen =200, digits = 4)
+otu_table <- prop.table(data.matrix(otu_table),2)
+otu_table <- as.data.frame(otu_table)
+otu_table <- otu_table[apply(otu_table, 1, function(x) max(x) > 0.001),]
+otu_table$OTUons <- paste0("Feature",1:nrow(otu_table))
+otu_table$OTUstring <- rownames(otu_table)
+rownames(otu_table) <- otu_table$OTUons
+otu_key <- select(otu_table, OTUons:OTUstring)
+otu_table <- select(otu_table, -OTUons, -OTUstring)
+otu_table <- t(otu_table)
+otu_table <- as.data.frame(otu_table)
+otu_table$sample.id <- rownames(otu_table)
+
+data_model <- inner_join(otu_table, meta_con_in) %>%
+  select(Feature1:Feature4707, age_day, stage, sample.id) %>%
+  column_to_rownames(var = "sample.id")
+data_out <- inner_join(otu_table, meta_con_out) %>%
+  select(Feature1:Feature4707, age_day, stage, sample.id) %>%
+  column_to_rownames(var = "sample.id")
+```
+
+# Train the model
+The best to run this step is in __HPC__
+```{r}
+# for (i in 1:20){
+#   set.seed(i)
+#   trainlist <- createDataPartition(
+#     y = data_model$age_day, 
+#     p = 0.8,
+#     list = F)
+#   data_train <- data_model[trainlist,]
+#   data_test <- data_model[-trainlist,]
+#   set.seed(316)
+#   fit_rf <- randomForest(
+#     age_day ~.,
+#     data = data_train,
+#     importance = TRUE,
+#     proximity = TRUE,
+#     ntree = 10000
+#   )
+#   save(fit_rf, file = paste0("fit_rf_",i,".RData"))
+#   cv_rf <- rfcv(data_train[,-ncol(data_train)], data_train$age_day, cv.fold = 10)
+#   save(cv_rf, file = paste0("cv_rf_",i,".RData"))
+# }
+```
+
+# Predictive performance of the models
+```{r, include=FALSE, cache=TRUE, results='hide'}
+meta_suckling <- filter(meta_con, stage == 'suckling')
+meta_weaning <- filter(meta_con, stage == 'weaning')
+meta_growing <- filter(meta_con, stage == 'growing')
+meta_finishing <- filter(meta_con, stage == 'finishing')
+
+for (j in c("train", "test", "external")){
+  print(j)
+  suck <- NULL
+  wean <- NULL
+  grow <- NULL
+  finish <- NULL
+
+  for (i in 1:20){
+  # split data into training & test according to same seed
+  print(i)
+  set.seed(i)
+  trainlist <- createDataPartition(y = data_model$age_day, p = 0.8,list = F)
+  data_train <- data_model[trainlist,]
+  data_test <- data_model[-trainlist,]
+  
+  ifelse(j == "train", assign(paste0("data_","j"), data_train), 
+     ifelse(j == "test", assign(paste0("data_","j"), data_test),
+            ifelse(j == "external", assign(paste0("data_","j"), data_out),)))
+  
+  data_suckling <- data_j[meta_suckling$sample.id,] %>% drop_na()
+  data_weaning <- data_j[meta_weaning$sample.id,] %>% drop_na()
+  data_growing <- data_j[meta_growing$sample.id,] %>% drop_na()
+  data_finishing <- data_j[meta_finishing$sample.id,] %>% drop_na()
+  
+  load(paste0("input/rf/","fit_rf_",i,".RData"))
+  
+  pred1 <- predict(fit_rf, newdata = select(data_suckling, Feature1:Feature4707))
+  pred2 <- predict(fit_rf, newdata = select(data_weaning, Feature1:Feature4707))
+  pred3 <- predict(fit_rf, newdata = select(data_growing, Feature1:Feature4707))
+  pred4 <- predict(fit_rf, newdata = select(data_finishing, Feature1:Feature4707))
+  
+  result1 <- data.frame(defaultSummary(data.frame(obs=data_suckling$age_day, pred=pred1)))
+  result1 <- data.frame(t(result1))
+  result2 <- data.frame(defaultSummary(data.frame(obs=data_weaning$age_day, pred=pred2)))
+  result2 <- data.frame(t(result2))
+  result3 <- data.frame(defaultSummary(data.frame(obs=data_growing$age_day, pred=pred3)))
+  result3 <- data.frame(t(result3))
+  result4 <- data.frame(defaultSummary(data.frame(obs=data_finishing$age_day, pred=pred4)))
+  result4 <- data.frame(t(result4))
+  
+  suck <- rbind(suck, result1)
+  wean <- rbind(wean, result2)
+  grow <- rbind(grow, result3)
+  finish <- rbind(finish, result4)
+  }
+  suck$treat <- rep("suck", 20)
+  wean$treat <- rep("wean", 20)
+  grow$treat <- rep("grow", 20)
+  finish$treat <- rep("finish", 20)
+
+  df <- rbind(suck, wean, grow, finish)
+  assign(paste0("df_",j), df)
+}
+```
+
+```{r}
+library(agricolae)
+for (i in c("train","test","external")){
+ print(i)
+ # df_test, df_external
+ ifelse(i == "train", df <- df_train, 
+     ifelse(i == "test", df <- df_test,
+            ifelse(i == "external", df <- df_external,)))
+
+ fit_RMSE <- aov(df$RMSE~df$treat)
+ fit_MAE <- aov(df$MAE~df$treat)
+ fit_Rsquared <- aov(df$Rsquared~df$treat)
+
+ #print(summary(fit_RMSE))
+ #print(TukeyHSD(fit_RMSE))
+ rmse <- LSD.test(fit_RMSE, "df$treat", p.adj = "bonferroni")
+ print(rmse$groups)
+
+ #print(summary(fit_MAE))
+ #print(TukeyHSD(fit_MAE))
+ mae <- LSD.test(fit_MAE, "df$treat", p.adj = "bonferroni")
+ print(mae$groups)
+
+ #print(summary(fit_Rsquared))
+ #print(TukeyHSD(fit_Rsquared))
+ r2 <- LSD.test(fit_Rsquared, "df$treat", p.adj = "bonferroni")
+ print(r2$groups)
+}
+```
+
+### Predictive performance visualize using ggplot
+```{r}
+# I will use the first model among the 20 pre-trained models
+set.seed(1)
+
+trainlist <- createDataPartition(
+  y = data_model$age_day, 
+  p = 0.8,
+  list = F)
+data_train <- data_model[trainlist,]
+data_test <- data_model[-trainlist,]
+load("input/rf/fit_rf_1.Rdata")
+
+# Training set
+train.p <- predict(fit_rf, newdata = data_train[,-ncol(data_train)])
+df_tr = data.frame(observed = data_train$age_day, predict = train.p)
+cor_tr = cor.test(df_tr[,1], df_tr[,2], method = "pearson") # spearman or pearson
+m_cor_tr = lm(observed ~ predict, df_tr)
+
+ggplot(df_tr, aes(observed, predict)) +
+  geom_point(color = "#8491B4FF") + #8491B4FF   #4DBBD5FF
+  geom_smooth(method = "lm", color="#E64B35FF") +
+  labs(x = "Chronological age of a pig (days)", 
+       y = "Microbiota age (days)",
+       title = paste0("Training set (n = 1,150)\nPearson'r = ", round(cor_tr$estimate,            digits = 5),", R squared = ", round(summary(m_cor_tr)$r.squared, digits = 5),
+       "\nP = ", signif(cor_tr$p.value, digits = 5)))+
+  theme_minimal()
+
+# ggsave("output/rf_train.pdf",height = 5, width = 6)
+```
+
+```{r, echo=FALSE}
+# Test set
+test.p <- predict(fit_rf, newdata = data_test[,-ncol(data_test)])
+df_te = data.frame(observed = data_test$age_day, predict = test.p)
+cor_te = cor.test(df_te[,1], df_te[,2], method = "pearson") # spearman or pearson
+m_cor_te = lm(observed ~ predict, df_te)
+
+ggplot(df_te, aes(observed, predict)) +
+  geom_point(color = "#4DBBD5FF") + #8491B4FF   #4DBBD5FF
+  geom_smooth(method = "lm", color="#E64B35FF") +
+  labs(x = "Chronological age of a pig (days)", 
+       y = "Microbiota age (days)",
+       title = paste0("Test set (n = 286)\nPearson'r = ", round(cor_te$estimate,            digits = 5),", R squared = ", round(summary(m_cor_te)$r.squared, digits = 5),
+       "\nP = ", round(cor_te$p.value, digits = 5)))+
+  theme_minimal()
+
+# ggsave("output/rf_test.pdf",height = 5, width = 6)
+```
+
+```{r, echo=FALSE}
+# External validation
+out.p <- predict(fit_rf, newdata = data_out[,-ncol(data_out)])
+df_out = data.frame(observed = data_out$age_day, predict = out.p)
+cor_out = cor.test(df_out[,1], df_out[,2], method = "pearson") # spearman or pearson
+m_cor_out = lm(observed ~ predict, df_out)
+
+ggplot(df_out, aes(observed, predict)) +
+  geom_point(color = "#7E6148FF") + #8491B4FF   #4DBBD5FF
+  geom_smooth(method = "lm", color="#E64B35FF") +
+  labs(x = "Chronological age of a pig (days)", 
+       y = "Microbiota age (days)",
+       title = paste0("External validation (n = 229)\nPearson'r = ", round(cor_out$estimate,        digits = 5),", R squared = ", round(summary(m_cor_out)$r.squared, digits = 5),
+       "\nP = ", round(cor_out$p.value, digits = 5)))+
+  theme_minimal()
+
+# ggsave("output/rf_external.pdf",height = 5, width = 6)
+```
+
+### External by early & late
+```{r, echo=FALSE}
+data_external <- data_out
+data_out <- filter(data_external, age_day <80)
+
+# External validation
+out.p <- predict(fit_rf, newdata = data_out[,-ncol(data_out)])
+df_out = data.frame(observed = data_out$age_day, predict = out.p)
+cor_out = cor.test(df_out[,1], df_out[,2], method = "pearson") # spearman or pearson
+m_cor_out = lm(observed ~ predict, df_out)
+
+ggplot(df_out, aes(observed, predict)) +
+  geom_point(color = "#7E6148FF") + #8491B4FF   #4DBBD5FF
+  geom_smooth(method = "lm", color="#E64B35FF") +
+  labs(x = "Chronological age of a pig (days)", 
+       y = "Microbiota age (days)",
+       title = paste0("External validation (age < 80)\nPearson'r = ", round(cor_out$estimate,        digits = 5),", R squared = ", round(summary(m_cor_out)$r.squared, digits = 5),
+       "\nP = ", round(cor_out$p.value, digits = 5)))+
+  theme_minimal()
+
+# ggsave("output/rf_external_early.pdf",height = 5, width = 6)
+```
+
+```{r, echo=FALSE}
+data_out <- filter(data_external, age_day>80)
+
+# External validation
+out.p <- predict(fit_rf, newdata = data_out[,-ncol(data_out)])
+df_out = data.frame(observed = data_out$age_day, predict = out.p)
+cor_out = cor.test(df_out[,1], df_out[,2], method = "pearson") # spearman or pearson
+m_cor_out = lm(observed ~ predict, df_out)
+
+ggplot(df_out, aes(observed, predict)) +
+  geom_point(color = "#7E6148FF") + #8491B4FF   #4DBBD5FF
+  geom_smooth(method = "lm", color="#E64B35FF") +
+  labs(x = "Chronological age of a pig (days)", 
+       y = "Microbiota age (days)",
+       title = paste0("External validation (age > 80)\nPearson'r = ", round(cor_out$estimate,        digits = 5),", R squared = ", round(summary(m_cor_out)$r.squared, digits = 5),
+       "\nP = ", round(cor_out$p.value, digits = 5)))+
+  theme_minimal()
+
+# ggsave("output/rf_external_late.pdf",height = 5, width = 6)
+```
+
+# rfcv
+```{r, include=FALSE, cache=TRUE}
+for (i in 1:20){
+  load(paste0("input/rf/cv_rf_",i,".RData"))
+  assign(paste0("cv_rf_",i), data.frame(cv_rf$error.cv))
+}
+cv_rf <- cbind(cv_rf_1,cv_rf_2,cv_rf_3,cv_rf_4,cv_rf_5,
+               cv_rf_6,cv_rf_7,cv_rf_8,cv_rf_9,cv_rf_10,
+               cv_rf_11,cv_rf_12,cv_rf_13,cv_rf_14,cv_rf_15,
+               cv_rf_16,cv_rf_17,cv_rf_18,cv_rf_19,cv_rf_20)
+n.var <- row.names(cv_rf)
+error.cv <- cv_rf[,1:20]
+err.mean = apply(error.cv,1,mean)
+err.sd = apply(error.cv,1,sd)
+allerr = data.frame(num=n.var,err.mean=err.mean,err.sd=err.sd,error.cv)
+allerr$num <- as.numeric(allerr$num)
+optimal = 30
+```
+
+```{r, echo=FALSE}
+# ggplot() + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.1), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.2), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.3), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.4), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.5), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.6), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.7), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.8), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.9), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.10), colour = 'grey') +
+#   geom_line(aes(x = allerr$num, y = allerr$err.11), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.12), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.13), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.14), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.15), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.16), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.17), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.18), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.19), colour = 'grey') + 
+#   geom_line(aes(x = allerr$num, y = allerr$err.20), colour = 'grey') +
+#   geom_line(aes(x = allerr$num, y = allerr$err.mean), colour = 'black') +
+#   geom_point(aes(x = allerr$num, y = allerr$err.mean), colour = 'black', size=1) +
+#   geom_vline(xintercept = optimal, colour='black', lwd=0.36, linetype="dashed") + 
+#   geom_hline(yintercept = min(allerr$err.mean)-5, colour='black', lwd=0.36, linetype="dashed") +
+#   coord_trans(x = "log2") +
+#   scale_x_continuous(breaks = c(1, 2, 4, 8, 16, 32, 64, 128, 256, 512,1224,2448))+
+#   scale_y_continuous(breaks = c(200,400,600,800,1000,1200))+
+#   labs(x='Number of OTUs', y='Cross-validation error') + 
+#   annotate("text",x=optimal+28,y=max(allerr$err.mean),label=paste0("Optimal = ", optimal)) +
+#   theme_classic(base_size = 12)
+
+# ggsave("output/rf_rfcv.pdf",height = 5, width = 8)
+```
+
+# Feature importance
+```{r, cache=TRUE}
+
+for (i in 1:20){
+  load(paste0("input/rf/fit_rf_",i,".RData"))
+  imp_rf <- as.data.frame(fit_rf$importance) %>% dplyr::select(-IncNodePurity)
+  assign(paste0("imp_rf_",i), imp_rf)
+}
+imp_rf <- cbind(imp_rf_1,imp_rf_2,imp_rf_3,imp_rf_4,imp_rf_5,
+               imp_rf_6,imp_rf_7,imp_rf_8,imp_rf_9,imp_rf_10,
+               imp_rf_11,imp_rf_12,imp_rf_13,imp_rf_14,imp_rf_15,
+               imp_rf_16,imp_rf_17,imp_rf_18,imp_rf_19,imp_rf_20)
+imp_rf$mean <- apply(imp_rf, 1, mean)
+imp_rf$sd <- apply(imp_rf,1,sd)
+imp_rf <- imp_rf[order(imp_rf[,21],decreasing = T),]
+imp_rf$Feature <- row.names(imp_rf)
+
+taxonomy<-read_qza("input/taxonomy_97.qza")
+tax.clean<-parse_taxonomy(taxonomy$data)
+tax.clean$OTUstring <- row.names(tax.clean)
+otu_key <- inner_join(otu_key, tax.clean)
+otu_key$Feature <- otu_key$OTUons
+
+imp_rf <- imp_rf[, -(1:20)]
+
+##
+# imp_features <- inner_join(imp_rf, otu_key)
+# otus_97_qza <- read_qza("input/97_otus.qza")
+# rep_seqs_qza <- read_qza("input/rep-seqs3.qza")
+# rep_seqs <- data.frame(rep_seqs_qza$data) %>% 
+#   rownames_to_column("OTUstring")
+# imp_features <- inner_join(imp_features,rep_seqs)
+# otus_97 <- data.frame(otus_97_qza$data) %>% 
+#   rownames_to_column("OTUstring")
+# imp_features <- inner_join(imp_features,otus_97)
+# 
+# write.table(imp_features, "output/rf_imp_features.txt", quote = F, sep = "\t")
+##
+
+imp_rf <- inner_join(imp_rf, otu_key) %>%  
+  unite(Feature_new, OTUons, Genus, sep="-")
+imp_rf$Feature_new <- str_replace(imp_rf$Feature_new, "Feature", "")
+
+```
+
+```{r}
+imp_rf[3,4] <- "3803-uncultured Veillonellaceae"
+imp_rf[9,4] <- "11-unclutured Veillonellaceae"
+imp_rf[15,4] <- "3435-uncultured Prevotellaceae"
+imp_rf[27,4] <- "98-uncultured Veillonellaceae"
+
+
+ggplot(data = imp_rf[(1:30),], mapping = aes(x=reorder(Feature_new,mean),y=mean, fill=Phylum)) + 
+  geom_bar(stat="identity")+
+  geom_errorbar(aes(x=reorder(Feature_new,mean),ymin=mean-sd/sqrt(20),ymax=mean+sd/sqrt(20)),
+                width=0.4, colour="black", alpha=0.5, size=0.6)+
+  coord_flip()+
+  labs(y="Increase in Mean Squared Error", x="Increasing importance in accuracy of model") +
+  scale_fill_aaas()+
+  theme_classic()
+
+# ggsave("output/rf_imp.pdf",height = 4, width = 10)
+```
+
+# Heatmap of RA of features
+```{r, include=FALSE}
+imp_rf_top30 <- imp_rf[(1:30),]
+
+training_abu <- data_train[,-4709]
+training_abu <- aggregate(training_abu, by=training_abu[4708], FUN=mean)
+training_abu <- t(training_abu)
+colnames(training_abu) <- training_abu[1,]
+training_abu <- training_abu[imp_rf_top30$Feature,]
+
+# pheatmap(training_abu,scale="row",cluster_cols = F, cluster_rows = F)
+
+bak=training_abu
+training_abu = training_abu[as.character(imp_rf_top30$Feature),]
+for (i in 1:length(rownames(training_abu))) {
+  #  i=1
+  x=as.data.frame(sort(training_abu[i,],decreasing = T))
+  imp_rf_top30[i,"order"]=rownames(x)[1]
+}
+imp_rf_top30$order <- as.numeric(imp_rf_top30$order)
+
+feature <- arrange(imp_rf_top30, desc(order))
+feature$order <- as.numeric(feature$order)
+training_abu1 = training_abu[match(feature$Feature,rownames(training_abu)),]
+
+training_abu1 <- as.data.frame(training_abu1)
+
+training_abu1$Feature <- row.names(training_abu1)
+mat <- inner_join(training_abu1, imp_rf_top30)
+row.names(mat) <- mat$Feature_new
+mat <- select(mat, -(Feature:order))
+
+labels_row <- row.names(mat)
+```
+
+```{r, fig.width=9}
+pheatmap(mat,
+         color = colorRampPalette(c('#2fa1dd',"white","#DC0000FF"), bias=0.85)(100),
+         scale = "row", border_color = "white",cluster_cols = F, 
+         cluster_rows = F, labels_row = labels_row) 
+         #cellwidth = 6.5, cellheight = 8, fontsize = 8, filename = "output/rf_heatmap.pdf")
+```
+
+# eXtreme Gridient Boost
+## data split
+```{r, include=FALSE, warning=FALSE}
+set.seed(316)
+data_out <- data_external
+
+trainlist <- createDataPartition(
+  y = data_model$age_day, 
+  p = 0.8,
+  list = F)
+data_train <- data_model[trainlist,]
+data_test <- data_model[-trainlist,]
+
+trainlistE <- createDataPartition(
+  y = data_train$age_day, 
+  p = 0.8,
+  list = F)
+data_trainE <- data_train[trainlistE,]
+data_valid <- data_train[-trainlistE,]
+
+## for stage spercific test
+train_suck <- filter(data_train, stage=='suckling')
+train_wean <- filter(data_train, stage=='weaning')
+train_grow <- filter(data_train, stage=='growing')
+train_finish <- filter(data_train, stage=='finishing')
+
+test_suck <- filter(data_test, stage=='suckling')
+test_wean <- filter(data_test, stage=='weaning')
+test_grow <- filter(data_test, stage=='growing')
+test_finish <- filter(data_test, stage=='finishing')
+
+out_suck <- filter(data_out, stage=='suckling')
+out_wean <- filter(data_out, stage=='weaning')
+out_grow <- filter(data_out, stage=='growing')
+out_finish <- filter(data_out, stage=='finishing')
+
+```
+
+## data prepare
+```{r, include=FALSE, warning=FALSE, cache=TRUE}
+dvfunc <- dummyVars(~.,data = data_train[, 1:4707], fullRank = T)
+
+data_trainx <- predict(dvfunc, newdata = data_trainE[, 1:4707])
+data_trainy <- data_trainE$age_day  
+
+data_validx <- predict(dvfunc, newdata = data_valid[, 1:4707])
+data_validy <- data_valid$age_day 
+
+data_testx <- predict(dvfunc, newdata = data_test[, 1:4707])
+data_testy <- data_test$age_day 
+
+data_outx <- predict(dvfunc, newdata = data_out[, 1:4707])
+data_outy <- data_out$age_day 
+
+dtrain <- xgb.DMatrix(data = data_trainx,
+                      label = data_trainy)
+
+dvalid <- xgb.DMatrix(data = data_validx,
+                      label = data_validy)
+
+dtest <- xgb.DMatrix(data = data_testx,
+                     label = data_testy)
+
+dout <- xgb.DMatrix(data = data_outx,
+                     label = data_outy)
+
+watchlist <- list(train = dtrain, test = dvalid)
+
+## for stage spercific test
+
+## training
+suck_train_x <- predict(dvfunc, newdata = train_suck[, 1:4707])
+suck_trainy <- train_suck$age_day
+dtrain_suck <- xgb.DMatrix(data = suck_train_x,
+                      label = suck_trainy)
+
+wean_train_x <- predict(dvfunc, newdata = train_wean[, 1:4707])
+wean_trainy <- train_wean$age_day
+dtrain_wean <- xgb.DMatrix(data = wean_train_x,
+                      label = wean_trainy)
+
+grow_train_x <- predict(dvfunc, newdata = train_grow[, 1:4707])
+grow_trainy <- train_grow$age_day
+dtrain_grow <- xgb.DMatrix(data = grow_train_x,
+                      label = grow_trainy)
+
+finish_train_x <- predict(dvfunc, newdata = train_finish[, 1:4707])
+finish_trainy <- train_finish$age_day
+dtrain_finish <- xgb.DMatrix(data = finish_train_x,
+                      label = finish_trainy)
+
+## test
+suck_test_x <- predict(dvfunc, newdata = test_suck[, 1:4707])
+suck_testy <- test_suck$age_day
+dtest_suck <- xgb.DMatrix(data = suck_test_x,
+                      label = suck_testy)
+
+wean_test_x <- predict(dvfunc, newdata = test_wean[, 1:4707])
+wean_testy <- test_wean$age_day
+dtest_wean <- xgb.DMatrix(data = wean_test_x,
+                      label = wean_testy)
+
+grow_test_x <- predict(dvfunc, newdata = test_grow[, 1:4707])
+grow_testy <- test_grow$age_day
+dtest_grow <- xgb.DMatrix(data = grow_test_x,
+                      label = grow_testy)
+
+finish_test_x <- predict(dvfunc, newdata = test_finish[, 1:4707])
+finish_testy <- test_finish$age_day
+dtest_finish <- xgb.DMatrix(data = finish_test_x,
+                      label = finish_testy)
+
+
+## out
+suck_out_x <- predict(dvfunc, newdata = out_suck[, 1:4707])
+suck_outy <- out_suck$age_day
+dout_suck <- xgb.DMatrix(data = suck_out_x,
+                      label = suck_outy)
+
+wean_out_x <- predict(dvfunc, newdata = out_wean[, 1:4707])
+wean_outy <- out_wean$age_day
+dout_wean <- xgb.DMatrix(data = wean_out_x,
+                      label = wean_outy)
+
+grow_out_x <- predict(dvfunc, newdata = out_grow[, 1:4707])
+grow_outy <- out_grow$age_day
+dout_grow <- xgb.DMatrix(data = grow_out_x,
+                      label = grow_outy)
+
+finish_out_x <- predict(dvfunc, newdata = out_finish[, 1:4707])
+finish_outy <- out_finish$age_day
+dout_finish <- xgb.DMatrix(data = finish_out_x,
+                      label = finish_outy)
+
+```
+
+## train the model
+```{r, warning=FALSE, cache=TRUE}
+
+# result_suck <- data.frame(t(data.frame(1,2,3)))
+# row.names(result_suck) <- c('RMSE','Rsquared','MAE')
+# 
+result_train <- NULL
+result_test <- NULL
+result_out <- NULL
+
+
+for (i in 1:20) {
+set.seed(i)
+fit_xgb <- xgb.train(
+  data = dtrain, # training data
+  
+  eta = 0.1, # learning rate:smaller, slower
+  gamma = 0.001, # bigger, more conserve the decision tree, control split of tree
+  max_depth = 1, # tree depth, 1 or 2
+  subsample = 0.8, # similar to bagging, control over fitting
+  colsample_bytree = 0.4, # over fitting control
+  
+  objective = "reg:squarederror",
+  
+  nrounds = 2000, # number of trees, number of iterations
+  watchlist = watchlist,
+  verbose = 0, 
+  print_every_n = 100, # verbose every 100 iterations
+  early_stopping_rounds = 200 # stop ahead escape over fit
+)
+## out data set evaluation
+
+print(i)
+
+pred_train1 <- predict(fit_xgb, newdata = dtrain_suck)
+pred_train2 <- predict(fit_xgb, newdata = dtrain_wean)
+pred_train3 <- predict(fit_xgb, newdata = dtrain_grow)
+pred_train4 <- predict(fit_xgb, newdata = dtrain_finish)
+
+pred_test1 <- predict(fit_xgb, newdata = dtest_suck)
+pred_test2 <- predict(fit_xgb, newdata = dtest_wean)
+pred_test3 <- predict(fit_xgb, newdata = dtest_grow)
+pred_test4 <- predict(fit_xgb, newdata = dtest_finish)
+
+pred_out1 <- predict(fit_xgb, newdata = dout_suck)
+pred_out2 <- predict(fit_xgb, newdata = dout_wean)
+pred_out3 <- predict(fit_xgb, newdata = dout_grow)
+pred_out4 <- predict(fit_xgb, newdata = dout_finish)
+
+train1 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = train_suck$age_day,
+                          pred = pred_train1)))))
+train2 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = train_wean$age_day,
+                          pred = pred_train2)))))
+train3 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = train_grow$age_day,
+                          pred = pred_train3)))))
+train4 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = train_finish$age_day,
+                          pred = pred_train4)))))
+train5 <- rbind(train1, train2, train3, train4)
+train5$stage <- c("suck","wean","grow","finish")
+
+result_train <- rbind(result_train, train5)
+
+### test
+test1 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = test_suck$age_day,
+                          pred = pred_test1)))))
+test2 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = test_wean$age_day,
+                          pred = pred_test2)))))
+test3 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = test_grow$age_day,
+                          pred = pred_test3)))))
+test4 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = test_finish$age_day,
+                          pred = pred_test4)))))
+test5 <- rbind(test1, test2, test3, test4)
+test5$stage <- c("suck","wean","grow","finish")
+
+result_test <- rbind(result_test, test5)
+
+## external validation
+out1 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = out_suck$age_day,
+                          pred = pred_out1)))))
+out2 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = out_wean$age_day,
+                          pred = pred_out2)))))
+out3 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = out_grow$age_day,
+                          pred = pred_out3)))))
+out4 <- data.frame(t(data.frame(defaultSummary(data.frame(obs = out_finish$age_day,
+                          pred = pred_out4)))))
+out5 <- rbind(out1, out2, out3, out4)
+out5$stage <- c("suck","wean","grow","finish")
+
+result_out <- rbind(result_out, out5)
+
+# pred_out_sort <- predict(fit_xgb, newdata = dout_sort)
+# print(defaultSummary(data.frame(obs = data_out_sort$age_day,
+#                                 pred = pred_out_sort)))
+# 
+# pred_out_sort_late <- predict(fit_xgb, newdata = dout_sort_late)
+# print(defaultSummary(data.frame(obs = data_out_sort_late$age_day,
+#                                 pred = pred_out_sort_late)))
+}
+```
+
+## predictive performance 
+```{r, warning=FALSE}
+
+library(agricolae)
+for (i in c("train","test","out")){
+  # print(i)
+  
+  ifelse(i == "train", result_df <- result_train, 
+     ifelse(i == "test", result_df <- result_test,
+            ifelse(i == "out", result_df <- result_out, print("else"))))
+  
+  fit_RMSE <- aov(result_df$RMSE~result_df$stage)
+  fit_MAE <- aov(result_df$MAE~result_df$stage)
+  fit_Rsquared <- aov(result_df$Rsquared~result_df$stage)
+
+  #print(summary(fit_RMSE))
+  #print(TukeyHSD(fit_RMSE))
+  rmse <- LSD.test(fit_RMSE, "result_df$stage", p.adj = "bonferroni")
+  print(rmse$groups)
+
+  #print(summary(fit_MAE))
+  #print(TukeyHSD(fit_MAE))
+  mae <- LSD.test(fit_MAE, "result_df$stage", p.adj = "bonferroni")
+  print(mae$groups)
+
+  #print(summary(fit_Rsquared))
+  #print(TukeyHSD(fit_Rsquared))
+  r2 <- LSD.test(fit_Rsquared, "result_df$stage", p.adj = "bonferroni")
+  print(r2$groups)
+
+}
+
+```
+
+
+
+
